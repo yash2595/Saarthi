@@ -1,0 +1,61 @@
+"""API models for normalized transport-agnostic interaction payloads."""
+
+from __future__ import annotations
+
+from typing import Any
+from uuid import UUID, uuid4
+
+from pydantic import Field
+
+from app.schemas.base import SchemaModel
+from app.schemas.context import ConversationContext, Intent, NavigationState
+from app.schemas.domain.interaction import ExecutionResult
+
+
+class InteractionRequest(SchemaModel):
+    """Normalized API request payload for AI interactions."""
+
+    request_id: UUID = Field(default_factory=uuid4, description="Unique request identifier.")
+    session_id: str | None = Field(default=None, description="Active session identifier.")
+    conversation_id: UUID | None = Field(default=None, description="Active conversation identifier.")
+    user_input: str = Field(min_length=1, description="Normalized user text input string.")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional request metadata.")
+
+
+class InteractionResponse(SchemaModel):
+    """Normalized API response payload for AI interactions."""
+
+    response_id: UUID = Field(default_factory=uuid4, description="Unique response identifier.")
+    request_id: UUID | None = Field(default=None, description="Correlated request identifier.")
+    session_id: str | None = Field(default=None, description="Session identifier.")
+    conversation_id: UUID | None = Field(default=None, description="Conversation identifier.")
+    success: bool = Field(default=True, description="Whether orchestration succeeded.")
+    content: str = Field(default="", description="User-facing assistant output text.")
+    intent: Intent | None = Field(default=None, description="Detected intent model.")
+    execution_result: ExecutionResult | None = Field(default=None, description="Execution result snapshot.")
+    navigation_state: NavigationState | None = Field(default=None, description="Updated navigation state.")
+    navigation_directive: dict[str, Any] | None = Field(
+        default=None,
+        description="UI navigation/form directive emitted by the orchestration transport.",
+    )
+    context: ConversationContext | None = Field(default=None, description="Loaded conversation context snapshot.")
+    finish_reason: str | None = Field(default=None, description="Reason generation finished.")
+    execution_time_ms: float | None = Field(default=None, description="Total execution latency in milliseconds.")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Response metadata.")
+
+    @property
+    def text(self) -> str:
+        """Alias property matching OrchestratorResponse.text contract."""
+        return self.content
+
+    def to_orchestrator_response(self) -> Any:
+        """Convert transport InteractionResponse to domain OrchestratorResponse."""
+        from app.orchestrator.orchestrator_models import OrchestratorResponse, ResponseType
+        return OrchestratorResponse(
+            response_id=str(self.response_id),
+            request_id=str(self.request_id) if self.request_id else str(uuid4()),
+            text=self.content,
+            response_type=ResponseType.CHAT,
+            navigation_directive=self.navigation_directive or (self.navigation_state.model_dump() if self.navigation_state else None),
+            metadata=self.metadata,
+        )

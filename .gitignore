@@ -1,0 +1,82 @@
+# Dependencies
+node_modules/
+**/node_modules/
+.venv/
+**/.venv/
+venv/
+**/venv/
+env/
+**/env/
+
+# Environment and Secrets
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+credentials.json
+*.pem
+*.key
+.credentials
+
+# Python cache & build
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+**/.pytest_cache/
+*.egg-info/
+**/*.egg-info/
+
+# Frontend & build artifacts
+dist/
+**/dist/
+build/
+**/build/
+.parcel-cache/
+.next/
+
+# Databases & local downloads
+mongodb.msi
+mongodb.zip
+mongodb_extracted/
+data/
+
+# Uploaded media & user files
+uploads/
+**/uploads/
+**/uploads/**
+*.wav
+*.mp3
+*.jpeg
+*.jpg
+*.png
+
+# TTS audio cache (binary, generated at runtime)
+**/tts/.cache/
+**/tts/.cache/*
+
+# Test/generated output files & logs
+voice_pipeline_e2e_results.txt
+*.log
+**/*.log
+response.json
+cleanup_log.txt
+browser_console_trace.log
+scratch/
+**/scratch/
+scratch_*.py
+**/scratch_*.py
+verify_regression_personas.py
+verify_names_to_roman.py
+verify_fixes.py
+**/verify_fixes.py
+
+# System & tool folders
+.DS_Store
+Thumbs.db
+.emergent/
+**/.emergent/

@@ -1,0 +1,3497 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useSaarthi } from '../components/saarthi/SaarthiContext';
+import { useNavigate } from 'react-router-dom';
+import { getPersistableData } from '../utils/formSecurity';
+import apiClient from '../api/api';
+
+/** Shared sanitization helper to guarantee no passwords/credentials enter sessionStorage */
+export function persistVoiceState(data: Record<string, any>) {
+  try {
+    const safeData = getPersistableData(data);
+    sessionStorage.setItem('ms_saarthi_form_state', JSON.stringify(safeData));
+  } catch (e) {}
+}
+
+// ---------- Helper utilities -------------------------------------------------
+/** High-accuracy linear interpolation resampler to guarantee 16000Hz mono PCM stream regardless of hardware AudioContext rate */
+function downsampleTo16kHz(inputBuffer: Float32Array, inputSampleRate: number): Float32Array {
+  if (!inputSampleRate || inputSampleRate === 16000) {
+    return inputBuffer;
+  }
+  const ratio = inputSampleRate / 16000;
+  const newLength = Math.round(inputBuffer.length / ratio);
+  const result = new Float32Array(newLength);
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+  while (offsetResult < result.length) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+    let accum = 0;
+    let count = 0;
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < inputBuffer.length; i++) {
+      accum += inputBuffer[i];
+      count++;
+    }
+    result[offsetResult] = count > 0 ? accum / count : 0;
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+  return result;
+}
+
+/** Convert Float32Array audio samples to 16‑bit PCM (little‑endian) */
+function float32ToPCM16(buffer: Float32Array): Uint8Array {
+  const l = buffer.length;
+  const result = new Uint8Array(l * 2);
+  for (let i = 0; i < l; i++) {
+    let s = Math.max(-1, Math.min(1, buffer[i]));
+    s = s < 0 ? s * 0x8000 : s * 0x7fff;
+    const int16 = Math.round(s);
+    result[i * 2] = int16 & 0xff; // little‑endian lower byte
+    result[i * 2 + 1] = (int16 >> 8) & 0xff;
+  }
+  return result;
+}
+
+
+
+/** Strip any RIFF/WAVE container headers from incoming LINEAR16 PCM chunks to prevent loud impulse spikes/clicks */
+function stripWavHeaders(bytes: Uint8Array): Uint8Array {
+  if (bytes.length < 44) return bytes;
+  // Fast check: if no 'RIFF' anywhere in chunk, it is already pure PCM
+  let hasRiff = false;
+  for (let i = 0; i <= bytes.length - 4; i++) {
+    if (bytes[i] === 0x52 && bytes[i + 1] === 0x49 && bytes[i + 2] === 0x46 && bytes[i + 3] === 0x46) {
+      hasRiff = true;
+      break;
+    }
+  }
+  if (!hasRiff) return bytes;
+
+  const pcmParts: Uint8Array[] = [];
+  let idx = 0;
+  while (idx < bytes.length) {
+    if (
+      idx + 4 <= bytes.length &&
+      bytes[idx] === 0x52 &&
+      bytes[idx + 1] === 0x49 &&
+      bytes[idx + 2] === 0x46 &&
+      bytes[idx + 3] === 0x46
+    ) {
+      // Find 'data' marker (0x64, 0x61, 0x74, 0x61) within next 100 bytes
+      let dataPos = -1;
+      const searchLimit = Math.min(idx + 100, bytes.length - 8);
+      for (let j = idx + 12; j <= searchLimit; j++) {
+        if (
+          bytes[j] === 0x64 &&
+          bytes[j + 1] === 0x61 &&
+          bytes[j + 2] === 0x74 &&
+          bytes[j + 3] === 0x61
+        ) {
+          dataPos = j;
+          break;
+        }
+      }
+
+      if (dataPos !== -1) {
+        const dataLen =
+          bytes[dataPos + 4] |
+          (bytes[dataPos + 5] << 8) |
+          (bytes[dataPos + 6] << 16) |
+          (bytes[dataPos + 7] << 24);
+        const pcmStart = dataPos + 8;
+        const pcmEnd = Math.min(pcmStart + dataLen, bytes.length);
+        if (pcmEnd > pcmStart) {
+          pcmParts.push(bytes.subarray(pcmStart, pcmEnd));
+        }
+        idx = pcmEnd;
+      } else {
+        idx += 44;
+      }
+    } else {
+      let nextRiff = -1;
+      for (let j = idx; j <= bytes.length - 4; j++) {
+        if (
+          bytes[j] === 0x52 &&
+          bytes[j + 1] === 0x49 &&
+          bytes[j + 2] === 0x46 &&
+          bytes[j + 3] === 0x46
+        ) {
+          nextRiff = j;
+          break;
+        }
+      }
+      if (nextRiff !== -1) {
+        pcmParts.push(bytes.subarray(idx, nextRiff));
+        idx = nextRiff;
+      } else {
+        pcmParts.push(bytes.subarray(idx));
+        break;
+      }
+    }
+  }
+
+  const totalLen = pcmParts.reduce((acc, p) => acc + p.length, 0);
+  const out = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const p of pcmParts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
+
+/** Encode Uint8Array (PCM16) to base64 string */
+function uint8ArrayToBase64(u8: Uint8Array): string {
+  let binary = '';
+  const len = u8.byteLength;
+  for (let i = 0; i < len; i++) binary += String.fromCharCode(u8[i]);
+  return btoa(binary);
+}
+
+// ---------------------------------------------------------------------------
+
+export function getFormStateData(): Record<string, string> {
+  const data: Record<string, string> = {};
+
+  try {
+    const isPanditForm = !!document.querySelector('#pandit-onboarding-form, [data-testid="card-signup"]');
+    if (!isPanditForm) return data;
+
+    const firstNameEl = document.querySelector<HTMLInputElement>('#pandit-first-name, [data-testid="input-pandit-first-name"]');
+    const lastNameEl = document.querySelector<HTMLInputElement>('#pandit-last-name, [data-testid="input-pandit-last-name"]');
+    const phoneEl = document.querySelector<HTMLInputElement>('#pandit-phone, [data-testid="input-pandit-phone"]');
+    const emailEl = document.querySelector<HTMLInputElement>('#pandit-email, [data-testid="input-pandit-email"]');
+    const genderEl = document.querySelector<HTMLSelectElement>('#pandit-gender, [data-testid="select-pandit-gender"]');
+    const cityEl = document.querySelector<HTMLInputElement>('#pandit-city, [data-testid="input-pandit-city"]');
+    const stateEl = document.querySelector<HTMLInputElement>('#pandit-state, [data-testid="input-pandit-state"]');
+    const expEl = document.querySelector<HTMLInputElement | HTMLSelectElement>('#pandit-exp, [data-testid="input-pandit-exp"], [data-testid="select-pandit-exp"]');
+    const eduEl = document.querySelector<HTMLInputElement>('#pandit-education, [data-testid="input-pandit-education"]');
+    const specEl = document.querySelector<HTMLSelectElement>('#pandit-spec, [data-testid="select-pandit-spec"]');
+    const bioEl = document.querySelector<HTMLTextAreaElement>('#pandit-bio, [data-testid="textarea-pandit-bio"]');
+
+    const pwdEl = document.querySelector<HTMLInputElement>('#pandit-password, [data-testid="input-pandit-password"]');
+    const cpwdEl = document.querySelector<HTMLInputElement>('#pandit-confirm, [data-testid="input-pandit-confirm"]');
+    const aadhaarInput = document.querySelector<HTMLInputElement>('#pandit-aadhaarFile, #pandit-aadhaar-input, [data-testid="input-pandit-aadhaarFile"], [data-testid="input-aadhaar-file"]');
+    const certInput = document.querySelector<HTMLInputElement>('#pandit-certFile, #pandit-cert-input, [data-testid="input-pandit-certFile"], [data-testid="input-cert-file"]');
+    const galleryInput = document.querySelector<HTMLInputElement>('#pandit-galleryFiles, [data-testid="input-pandit-galleryFiles"]');
+    const termsEl = document.querySelector<HTMLInputElement>('#pandit-code-of-conduct, [data-testid="checkbox-pandit-conduct"], #pandit-terms-accepted, [data-testid="checkbox-pandit-terms"]');
+
+    const stepEl = document.querySelector('[data-testid="pandit-wizard-step"]');
+    if (stepEl) {
+      data['pandit-step'] = stepEl.getAttribute('data-step') || '1';
+    }
+
+    if (firstNameEl?.value) data['pandit-first-name'] = firstNameEl.value.trim();
+    if (lastNameEl?.value) data['pandit-last-name'] = lastNameEl.value.trim();
+
+    const fn = firstNameEl?.value?.trim() || '';
+    const ln = lastNameEl?.value?.trim() || '';
+    if (fn || ln) {
+      data['pandit-name'] = `${fn} ${ln}`.trim();
+      data['name'] = `${fn} ${ln}`.trim();
+    }
+
+    if (phoneEl?.value) {
+      data['pandit-phone'] = phoneEl.value.trim();
+      data['phone'] = phoneEl.value.trim();
+    }
+    if (emailEl?.value) {
+      data['pandit-email'] = emailEl.value.trim();
+      data['email'] = emailEl.value.trim();
+    }
+    if (genderEl?.value) data['pandit-gender'] = genderEl.value.trim();
+    if (cityEl?.value) {
+      data['pandit-city'] = cityEl.value.trim();
+      data['city'] = cityEl.value.trim();
+    }
+    if (stateEl?.value) {
+      data['pandit-state'] = stateEl.value.trim();
+      data['state'] = stateEl.value.trim();
+    }
+    if (expEl?.value) {
+      data['pandit-exp'] = expEl.value.trim();
+      data['experience'] = expEl.value.trim();
+    }
+    if (eduEl?.value) data['pandit-education'] = eduEl.value.trim();
+    if (specEl?.value) {
+      data['pandit-spec'] = specEl.value.trim();
+      data['specialization'] = specEl.value.trim();
+    }
+    if (bioEl?.value) {
+      data['pandit-bio'] = bioEl.value.trim();
+      data['bio'] = bioEl.value.trim();
+    }
+
+    // Password security: send flags only, never raw string
+    data['pandit-password_filled'] = (pwdEl && pwdEl.value && pwdEl.value.trim().length > 0) ? 'true' : 'false';
+    data['password_filled'] = data['pandit-password_filled'];
+
+    data['pandit-confirm_filled'] = (cpwdEl && cpwdEl.value && cpwdEl.value.trim().length > 0) ? 'true' : 'false';
+    data['confirm_filled'] = data['pandit-confirm_filled'];
+
+    const avatarInput = document.querySelector<HTMLInputElement>('#pandit-avatar, [data-testid="input-pandit-avatar"]');
+    const avatarPreviewImg = document.querySelector<HTMLImageElement>('[alt="Preview"]');
+    const hasAvatarFile = (avatarInput && avatarInput.files && avatarInput.files.length > 0) ||
+                          (avatarPreviewImg && avatarPreviewImg.getAttribute('src')?.startsWith('data:image'));
+    data['avatar_attached'] = hasAvatarFile ? 'true' : 'false';
+
+    const windowAadhaar = (window as any)._panditAadhaarFile;
+    const hasAadhaar = Boolean((aadhaarInput && aadhaarInput.files && aadhaarInput.files.length > 0) || windowAadhaar);
+    data['aadhaar_attached'] = hasAadhaar ? 'true' : 'false';
+    data['aadhaarFile_attached'] = hasAadhaar ? 'true' : 'false';
+    if (hasAadhaar) {
+      data['pandit-aadhaarFile'] = aadhaarInput?.files?.[0]?.name || windowAadhaar?.name || 'attached';
+    }
+
+    const windowCert = (window as any)._panditCertFile;
+    const hasCert = Boolean((certInput && certInput.files && certInput.files.length > 0) || windowCert);
+    data['cert_attached'] = hasCert ? 'true' : 'false';
+    data['certFile_attached'] = hasCert ? 'true' : 'false';
+    if (hasCert) {
+      data['pandit-certFile'] = certInput?.files?.[0]?.name || windowCert?.name || 'attached';
+    }
+
+    const windowGalleryFiles: File[] = Array.isArray((window as any)._panditGalleryFiles) ? (window as any)._panditGalleryFiles : [];
+    const inputGalleryFiles: File[] = galleryInput?.files ? Array.from(galleryInput.files) : [];
+    const galleryFilesList: File[] = windowGalleryFiles.length > 0 ? windowGalleryFiles : inputGalleryFiles;
+
+    const hasGallery = galleryFilesList.length > 0;
+    data['gallery_attached'] = hasGallery ? 'true' : 'false';
+    data['galleryFiles_attached'] = hasGallery ? 'true' : 'false';
+    data['gallery_file_count'] = String(galleryFilesList.length);
+    data['gallery_files_meta'] = JSON.stringify(
+      galleryFilesList.map((f) => ({
+        name: f.name,
+        size: f.size,
+        type: f.type,
+      }))
+    );
+    if (hasGallery) {
+      data['pandit-galleryFiles'] = galleryFilesList.map((f) => f.name).join(', ');
+    }
+
+    const isTermsChecked = Boolean(termsEl && termsEl.checked);
+    data['terms_accepted'] = isTermsChecked ? 'true' : 'false';
+    data['pandit-code-of-conduct'] = isTermsChecked ? 'true' : 'false';
+
+    if ((window as any)._lastSubmissionError) {
+      data['submission_error'] = (window as any)._lastSubmissionError;
+    }
+    if ((window as any)._lastConflictField) {
+      data['conflict_field'] = (window as any)._lastConflictField;
+    }
+  } catch (e) {
+    console.warn('[FORM-STATE] Error building form state data:', e);
+  }
+
+  return data;
+}
+
+function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback for insecure contexts (HTTP over local network IP, etc.)
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.floor(Math.random() * 16);
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+function getGreetingIntroRatio(text: string): number {
+  const greeting = text.trim();
+  if (!greeting) return 0;
+  const sentenceEnd = greeting.search(/[.!?।]/);
+  const intro = sentenceEnd >= 0 ? greeting.slice(0, sentenceEnd + 1) : greeting;
+  return Math.min(1, intro.length / greeting.length);
+}
+
+export function useSaarthiVoice() {
+  const { state, setDialogueText, setSaarthiState, forceMinimize, announceMessage, setNeedsRepeat } = useSaarthi();
+  
+  // Track request IDs to drop late responses from abandoned requests
+  const currentRequestIdRef = useRef<string>('');
+  const abandonedRequestsRef = useRef<Set<string>>(new Set());
+  const activeRequestIdRef = useRef<string>('');
+  const [isConnected, setIsConnected] = useState(false);
+  const [isSessionReady, setIsSessionReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isTtsPlaying, setIsTtsPlaying] = useState(false);
+  const [ttsPlaybackId, setTtsPlaybackId] = useState(0);
+  const [isGreetingTtsSpeaking, setIsGreetingTtsSpeaking] = useState(false);
+
+  // Push-to-talk state removed for revert
+
+
+  const isVoiceEnabledRef = useRef<boolean>(true);
+  const isTtsPlayingRef = useRef(false);
+  const greetingPlaybackRef = useRef({
+    active: false,
+    introRatio: 0,
+    startedAt: null as number | null,
+    cueScheduled: false,
+    cueSource: null as AudioBufferSourceNode | null,
+  });
+  const wsRef = useRef<WebSocket | null>(null);
+  const isRateLimitedRef = useRef<boolean>(false);
+  const hasAnnouncedRateLimitRef = useRef<boolean>(false);
+  const lastHighlightedFieldRef = useRef<string | null>(null);
+  const activeFieldRef = useRef<string | null>(null);
+  const isNavigatingRef = useRef<boolean>(false);
+  // Tracks fields the user has manually interacted with (typed/clicked) during this active voice session
+  const userEditedFieldsRef = useRef<Set<string>>(new Set());
+  const hasSelectedPanditTabRef = useRef<boolean>(false);
+  const manualEditDebounceTimerRef = useRef<any>(null);
+  const isSaarthiTypingRef = useRef<boolean>(false);
+  const lastSaarthiTypingEndTimeRef = useRef<number>(0);
+  const dirtyFieldsRef = useRef<Set<string>>(new Set());
+  const userRecordedBytesRef = useRef<number>(0);
+  const userHasSpokenRef = useRef<boolean>(false);
+  const preRollFramesRef = useRef<{ data: string; bytes: number }[]>([]);
+  const resetVadStateRef = useRef<(() => void) | null>(null);
+  const ttsCooldownTimerRef = useRef<any>(null);
+
+  const isSessionReadyRef = useRef(false);
+  const isConnectingRef = useRef(false);
+  const reconnectTimerRef = useRef<any>(null);
+  const connectionTimeoutRef = useRef<any>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const MAX_RECONNECT_ATTEMPTS = 10;
+
+  const stopGreetingTtsVisual = useCallback(() => {
+    const greetingPlayback = greetingPlaybackRef.current;
+    greetingPlayback.active = false;
+    if (greetingPlayback.cueSource) {
+      try {
+        greetingPlayback.cueSource.stop();
+      } catch (_) {}
+    }
+    greetingPlayback.cueSource = null;
+    setIsGreetingTtsSpeaking(false);
+  }, []);
+
+  const beginGreetingTtsVisual = useCallback((text: string) => {
+    stopGreetingTtsVisual();
+    greetingPlaybackRef.current = {
+      active: true,
+      introRatio: getGreetingIntroRatio(text),
+      startedAt: null,
+      cueScheduled: false,
+      cueSource: null,
+    };
+  }, [stopGreetingTtsVisual]);
+
+  const scheduleGreetingTalkingVideo = useCallback((audioContext: AudioContext) => {
+    const greetingPlayback = greetingPlaybackRef.current;
+    if (!greetingPlayback.active || greetingPlayback.cueScheduled || greetingPlayback.startedAt === null || !isFinalChunkReceived.current) {
+      return;
+    }
+
+    const totalDuration = nextStartTimeRef.current - greetingPlayback.startedAt;
+    if (totalDuration <= 0) return;
+
+    greetingPlayback.cueScheduled = true;
+    const transitionToTalking = () => {
+      if (greetingPlaybackRef.current.active) {
+        setIsGreetingTtsSpeaking(true);
+      }
+    };
+    const transitionAt = greetingPlayback.startedAt + totalDuration * greetingPlayback.introRatio;
+
+    if (transitionAt <= audioContext.currentTime) {
+      transitionToTalking();
+      return;
+    }
+
+    const cueSource = audioContext.createBufferSource();
+    const cueGain = audioContext.createGain();
+    cueGain.gain.value = 0;
+    cueSource.buffer = audioContext.createBuffer(1, 1, audioContext.sampleRate);
+    cueSource.connect(cueGain);
+    cueGain.connect(audioContext.destination);
+    cueSource.onended = () => {
+      try {
+        cueSource.disconnect();
+        cueGain.disconnect();
+      } catch (_) {}
+      transitionToTalking();
+    };
+    greetingPlayback.cueSource = cueSource;
+    cueSource.start(transitionAt);
+  }, []);
+
+  const markTtsPlaybackStarted = useCallback(() => {
+    if (isTtsPlayingRef.current) return;
+    isTtsPlayingRef.current = true;
+    setIsTtsPlaying(true);
+    setTtsPlaybackId((playbackId) => playbackId + 1);
+  }, []);
+
+  const markTtsPlaybackStopped = useCallback(() => {
+    stopGreetingTtsVisual();
+    if (!isTtsPlayingRef.current) return;
+    isTtsPlayingRef.current = false;
+    setIsTtsPlaying(false);
+  }, [stopGreetingTtsVisual]);
+
+  const updateSessionReady = useCallback((ready: boolean) => {
+    console.log(`[Voice] Session ready state updated: ${ready}`);
+    isSessionReadyRef.current = ready;
+    setIsSessionReady(ready);
+    if (ready) {
+      userRecordedBytesRef.current = 0;
+      userHasSpokenRef.current = false;
+    }
+  }, []);
+
+  const disableVoice = useCallback(() => {
+    console.log('[Voice] Disabling voice subsystem: stopping mic, closing WS, purging audio queue');
+    isVoiceEnabledRef.current = false;
+    setIsConnected(false);
+    updateSessionReady(false);
+
+    // 1. Remove all global autoplay click listeners
+    if ((window as any)._audioPlayClickListenerAdded) {
+      if ((window as any)._resumeAudioListener) {
+        window.removeEventListener('click', (window as any)._resumeAudioListener, true);
+        window.removeEventListener('keydown', (window as any)._resumeAudioListener, true);
+        window.removeEventListener('touchstart', (window as any)._resumeAudioListener, true);
+        window.removeEventListener('click', (window as any)._resumeAudioListener);
+        window.removeEventListener('keydown', (window as any)._resumeAudioListener);
+        window.removeEventListener('touchstart', (window as any)._resumeAudioListener);
+      }
+      (window as any)._audioPlayClickListenerAdded = false;
+    }
+
+    // 2. Purge queued audio & stop all active/scheduled audio sources
+    activeSourcesRef.current.forEach((source) => {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch (e) {}
+    });
+    activeSourcesRef.current.clear();
+    audioQueueRef.current = [];
+    pcmChunkBufferRef.current = [];
+    pcmByteLeftoverRef.current = null;
+    nextStartTimeRef.current = 0;
+    isPlayingRef.current = false;
+    markTtsPlaybackStopped();
+    isFinalChunkReceived.current = false;
+    if (currentAudioSourceRef.current) {
+      try {
+        currentAudioSourceRef.current.stop();
+        currentAudioSourceRef.current.disconnect();
+      } catch (e) {}
+      currentAudioSourceRef.current = null;
+    }
+
+    // 3. Stop mic stream & processor
+    if (processorRef.current) {
+      try {
+        processorRef.current.disconnect();
+        processorRef.current.onaudioprocess = null;
+      } catch (e) {}
+      processorRef.current = null;
+    }
+    if (micAudioCtxRef.current && micAudioCtxRef.current.state !== 'closed') {
+      micAudioCtxRef.current.close().catch(() => {});
+    }
+    micAudioCtxRef.current = null;
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((track) => {
+        console.log('[Voice] Stopping mic track:', track.label);
+        track.stop();
+      });
+      micStreamRef.current = null;
+    }
+
+    // 4. Close WebSocket
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (connectionTimeoutRef.current) {
+      clearTimeout(connectionTimeoutRef.current);
+      connectionTimeoutRef.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    // 5. Suspend audioContext
+    if (audioContextRef.current && audioContextRef.current.state === 'running') {
+      audioContextRef.current.suspend().catch(() => {});
+    }
+
+    // 6. Force state to idle
+    stateRef.current = 'idle';
+    setSaarthiState('idle');
+  }, [markTtsPlaybackStopped, setSaarthiState, updateSessionReady]);
+
+  const enableVoice = useCallback(() => {
+    console.log('[Voice] Enabling voice subsystem');
+    isVoiceEnabledRef.current = true;
+    if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+      connectWebSocketRef.current();
+    }
+  }, []);
+
+  const sendWsMessage = useCallback((payload: any): boolean => {
+    const currentWs = wsRef.current;
+    if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+      console.log(`[WS-SEND] [${new Date().toISOString()}] type=${payload?.type} req_id=${payload?.request_id} frame:`, JSON.stringify(payload));
+      currentWs.send(JSON.stringify(payload));
+      return true;
+    }
+    console.warn(
+      `[Voice] Cannot send WebSocket message (type: ${payload?.type}). ` +
+      `Socket state is ${currentWs ? currentWs.readyState : 'NULL'} (expected WebSocket.OPEN=${WebSocket.OPEN}).`
+    );
+    return false;
+  }, []);
+
+  const notifyPageChange = useCallback((newPage: string) => {
+    console.log('[Voice] Sending proactive PAGE_CHANGE WebSocket frame:', newPage);
+    // Fix 3 (navigation state reset): Reset all VAD & audio pipeline state on route change
+    userHasSpokenRef.current = false;
+    userRecordedBytesRef.current = 0;
+    preRollFramesRef.current = [];
+    if (resetVadStateRef.current) {
+      resetVadStateRef.current();
+    }
+    sendWsMessage({
+      type: 'PAGE_CHANGE',
+      payload: {
+        current_page: newPage,
+      },
+    });
+  }, [sendWsMessage]);
+
+
+
+  // toggleMic removed for revert
+  const navigate = useNavigate();
+
+
+
+  useEffect(() => {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+        .then(() => {
+          console.log('[MIC] Permission granted, ready');
+        })
+        .catch(err => {
+          console.error('[MIC] Permission denied:', err);
+        });
+    }
+
+    (window as any).simulateUserSpeech = (text: string, customField?: string) => {
+      console.log(`[DEBUG-SIMULATION] Simulating user speech: "${text}"`);
+      console.log('[Voice] TRANSCRIPT final', text);
+      const reqId = generateUUID();
+      activeRequestIdRef.current = reqId;
+      currentRequestIdRef.current = reqId;
+      const targetField = customField || activeFieldRef.current || 'pandit-spec';
+      activeFieldRef.current = targetField;
+      stateRef.current = 'thinking';
+      setSaarthiState('thinking');
+      sendWsMessage({
+        type: 'TEXT',
+        request_id: reqId,
+        payload: {
+          text: text,
+          language: 'hi',
+          current_page: window.location.pathname + window.location.search,
+          active_field: targetField,
+          dom_form_data: getFormStateData(),
+          user_edited_fields: Array.from(userEditedFieldsRef.current),
+          user_parameters: {
+            active_field: targetField,
+            field: targetField,
+          }
+        }
+      });
+    };
+
+    return () => {
+      delete (window as any).simulateUserSpeech;
+    };
+  }, [sendWsMessage, setSaarthiState]);
+
+
+  const playNextAudioRef = useRef<(() => void) | undefined>(undefined);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const currentAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const audioQueueRef = useRef<AudioBuffer[]>([]);
+  const isPlayingRef = useRef(false);
+  const isFinalChunkReceived = useRef(false);
+  const streamIntervalRef = useRef<number | any | null>(null);
+  const fallbackTimeoutRef = useRef<number | any | null>(null);
+  // BUG-11.1 FIX: Watchdog timer — if no AI_RESPONSE arrives within 12s of entering 'thinking', recover to 'listening'
+  const thinkingWatchdogRef = useRef<number | any | null>(null);
+  const sequenceQueueRef = useRef<any[]>([]);
+  const isExecutingSequenceRef = useRef(false);
+  const lastTargetRef = useRef<string | null>(null);
+  const audioBytesAccumulatorRef = useRef<Uint8Array[]>([]);
+
+  // ── FIX: Gapless Sequential Scheduler & Byte-Alignment Refs ──
+  const nextStartTimeRef = useRef<number>(0);
+  const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const pcmByteLeftoverRef = useRef<Uint8Array | null>(null);
+  const pcmChunkBufferRef = useRef<Uint8Array[]>([]);
+  const isSchedulingRef = useRef(false);
+
+  // ── ECHO FIX: dedicated 16kHz capture context (never shares a graph with TTS playback) ──
+  const micAudioCtxRef = useRef<AudioContext | null>(null);
+  // Adaptive echo-tail hold: after Saarthi stops speaking the mic stays gated until the
+  // measured input level actually decays back to the room noise floor (or the cap is hit),
+  // so loudspeaker reverb can never be mistaken for the user.
+  const echoTailActiveRef = useRef<boolean>(false);
+  const echoTailDeadlineRef = useRef<number>(0);
+  const echoTailQuietTicksRef = useRef<number>(0);
+  const ACOUSTIC_COOLDOWN_MS = 450;
+  const MAX_ECHO_TAIL_MS = 1500;
+  const ECHO_TAIL_QUIET_TICKS = 2;
+
+  // Sync activeFieldRef on page change: reset to null on non-signup pages
+  useEffect(() => {
+    const isSignupPage = window.location.pathname.includes('/signup');
+    if (!isSignupPage) {
+      activeFieldRef.current = null;
+    }
+  }, [navigate]);
+
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  const stopAudioPlayback = useCallback(() => {
+    console.log('[BARGE-IN] Executing stopAudioPlayback(). Halting active audio source & flushing audio queue.');
+    if (streamIntervalRef.current) {
+      clearInterval(streamIntervalRef.current as any);
+      streamIntervalRef.current = null;
+    }
+    // Stop and disconnect all actively playing and future-scheduled buffer source nodes
+    activeSourcesRef.current.forEach((source) => {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch (e) {
+        console.warn('[BARGE-IN] Error stopping scheduled audio source:', e);
+      }
+    });
+    activeSourcesRef.current.clear();
+
+    if (currentAudioSourceRef.current) {
+
+      try {
+        currentAudioSourceRef.current.stop();
+        currentAudioSourceRef.current.disconnect();
+      } catch (e) {
+        console.warn('[BARGE-IN] Error stopping audio source:', e);
+      }
+      currentAudioSourceRef.current = null;
+    }
+    audioQueueRef.current = [];
+    pcmChunkBufferRef.current = [];
+    pcmByteLeftoverRef.current = null;
+    audioBytesAccumulatorRef.current = [];
+    nextStartTimeRef.current = 0;
+    isPlayingRef.current = false;
+    markTtsPlaybackStopped();
+    isFinalChunkReceived.current = false;
+
+    if (fallbackTimeoutRef.current) {
+      clearTimeout(fallbackTimeoutRef.current);
+      fallbackTimeoutRef.current = null;
+    }
+
+    if (sequenceQueueRef.current.length > 0) {
+      console.log('[BARGE-IN] Flushing active UI animation sequence queue due to interruption.');
+      sequenceQueueRef.current = [];
+      isExecutingSequenceRef.current = false;
+      isSaarthiTypingRef.current = false;
+    }
+  }, [markTtsPlaybackStopped]);
+
+  // Tier 2: Track manual user interactions (typing/clicking) on form fields and advance voice flow on completion
+  useEffect(() => {
+    const shouldIgnoreEvent = (e: Event): boolean => {
+      // 1. Synthetic programmatic events dispatched by Saarthi (targetEl.dispatchEvent or click)
+      if (!e.isTrusted) return true;
+      // 2. Active Saarthi action sequence currently executing
+      if (isExecutingSequenceRef.current) return true;
+      // 3. Active Saarthi typing in progress
+      if (isSaarthiTypingRef.current) return true;
+      // 4. Cooldown buffer after Saarthi typing or action completion (1500ms)
+      if (Date.now() - lastSaarthiTypingEndTimeRef.current < 1500) return true;
+      return false;
+    };
+
+    const handleManualEditCompletion = (fieldName: string, value: string, source: string = 'UNKNOWN') => {
+      const now = Date.now();
+      console.log(`[TRACE-COMPLETION-CALL] time=${now} source=${source} field=${fieldName} value="${value}" dirtyBefore=${dirtyFieldsRef.current.has(fieldName)}`);
+
+      // Clear dirty flag for this field once handled
+      dirtyFieldsRef.current.delete(fieldName);
+
+      const isSignupPage = window.location.pathname.includes('/signup');
+      if (!isSignupPage || !fieldName || !value.trim()) return;
+      if (wsRef.current?.readyState !== WebSocket.OPEN || !isSessionReadyRef.current) return;
+      if (isExecutingSequenceRef.current || isSaarthiTypingRef.current) return;
+      if (Date.now() - lastSaarthiTypingEndTimeRef.current < 1500) return;
+
+      const trimmedVal = value.trim();
+      // Basic validity check depending on field
+      if (trimmedVal.length < 2 && !['Male', 'Female', 'Other', 'Online', 'Offline', 'Both'].includes(trimmedVal)) {
+        return;
+      }
+
+      console.log(`[MANUAL-FIELD-EDIT-COMPLETED] Advancing flow for field: ${fieldName} with value: "${trimmedVal}" (source=${source})`);
+      userEditedFieldsRef.current.add(fieldName);
+
+      const targetEl = document.querySelector<HTMLElement>(`#${fieldName}, [data-field="${fieldName}"], [data-testid="input-${fieldName}"]`);
+      if (targetEl) {
+        targetEl.classList.remove('saarthi-highlight');
+        targetEl.classList.add('saarthi-filled');
+      }
+
+      // Stop any active TTS audio playback
+      stopAudioPlayback();
+
+      // Transition UI to thinking state
+      stateRef.current = 'thinking';
+      setSaarthiState('thinking');
+
+      // Send TEXT frame to backend to advance turn
+      currentRequestIdRef.current = generateUUID();
+      activeRequestIdRef.current = currentRequestIdRef.current;
+      sendWsMessage({
+        type: 'TEXT',
+        request_id: currentRequestIdRef.current,
+        payload: {
+          text: trimmedVal,
+          current_page: window.location.pathname + window.location.search,
+          active_field: fieldName,
+          dom_form_data: getFormStateData(),
+          user_edited_fields: Array.from(userEditedFieldsRef.current),
+          user_parameters: {
+            source: 'manual_input',
+            field: fieldName,
+          }
+        }
+      });
+    };
+
+    const getFieldInfo = (target: HTMLElement | null) => {
+      if (!target) return null;
+      const fieldEl = target.closest('[data-field], [id^="pandit-"], [data-testid^="pill-"], [data-testid^="toggle-lang-"]');
+      if (!fieldEl) return null;
+
+      let fieldName = fieldEl.getAttribute('data-field') || fieldEl.id || '';
+      if (!fieldName) {
+        const testId = fieldEl.getAttribute('data-testid') || '';
+        if (testId.startsWith('pill-group-')) {
+          fieldName = testId.replace('pill-group-', '');
+        } else if (testId.startsWith('pill-')) {
+          const m = testId.match(/^pill-(pandit-[a-z0-9-]+?)(?:-[a-z0-9-]+)?$/);
+          if (m) fieldName = m[1];
+        } else if (testId.startsWith('toggle-lang-')) {
+          fieldName = 'pandit-languages';
+        }
+      }
+
+      let value = '';
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+        value = target.value;
+      } else if (target.tagName === 'BUTTON') {
+        value = target.textContent?.replace('✓', '').trim() || '';
+      }
+
+      return { fieldName, value };
+    };
+
+    const handleInputOrChange = (e: Event) => {
+      if (shouldIgnoreEvent(e)) return;
+
+      const info = getFieldInfo(e.target as HTMLElement | null);
+      if (!info || !info.fieldName) return;
+
+      const now = Date.now();
+      console.log(`[TRACE-INPUT-OR-CHANGE] time=${now} event=${e.type} field=${info.fieldName} value="${info.value}" dirtyBefore=${dirtyFieldsRef.current.has(info.fieldName)} hasTimer=${Boolean(manualEditDebounceTimerRef.current)}`);
+
+      dirtyFieldsRef.current.add(info.fieldName);
+      userEditedFieldsRef.current.add(info.fieldName);
+      console.log('[USER-EDITED-FIELD] Flagged user-edited field during active session:', info.fieldName);
+
+      if (manualEditDebounceTimerRef.current) {
+        clearTimeout(manualEditDebounceTimerRef.current);
+      }
+      if (info.value.trim().length >= 2) {
+        manualEditDebounceTimerRef.current = setTimeout(() => {
+          console.log(`[TRACE-DEBOUNCE-TIMER-FIRED] time=${Date.now()} field=${info.fieldName} value="${info.value}"`);
+          if (!isExecutingSequenceRef.current && !isSaarthiTypingRef.current && Date.now() - lastSaarthiTypingEndTimeRef.current >= 1500) {
+            handleManualEditCompletion(info.fieldName, info.value, 'DEBOUNCE_TIMER');
+          }
+        }, 1200);
+      }
+    };
+
+    const handleBlur = (e: Event) => {
+      if (shouldIgnoreEvent(e)) return;
+
+      const info = getFieldInfo(e.target as HTMLElement | null);
+      if (!info || !info.fieldName) return;
+
+      const now = Date.now();
+      const isDirty = dirtyFieldsRef.current.has(info.fieldName);
+      console.log(`[TRACE-BLUR] time=${now} event=${e.type} field=${info.fieldName} value="${info.value}" isDirty=${isDirty} hasTimer=${Boolean(manualEditDebounceTimerRef.current)}`);
+
+      // CRITICAL GUARD: Only trigger on blur if the user ACTUALLY manually typed into this field.
+      // If Saarthi blurred the field after programmatic fill, or the user just focused and blurred without typing, ignore it!
+      if (!isDirty) return;
+
+      if (manualEditDebounceTimerRef.current) {
+        clearTimeout(manualEditDebounceTimerRef.current);
+      }
+      if (info.value.trim().length >= 2) {
+        handleManualEditCompletion(info.fieldName, info.value, 'BLUR_EVENT');
+      }
+    };
+
+    const handleClick = (e: Event) => {
+      if (shouldIgnoreEvent(e)) return;
+
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const btn = target.closest('button[data-testid*="pill-"], button[data-testid*="toggle-lang-"], div[data-testid*="pill-group-"] button');
+      if (btn) {
+        const info = getFieldInfo(btn as HTMLElement);
+        if (info && info.fieldName && info.value) {
+          console.log(`[TRACE-CLICK] time=${Date.now()} field=${info.fieldName} value="${info.value}"`);
+          dirtyFieldsRef.current.add(info.fieldName);
+          userEditedFieldsRef.current.add(info.fieldName);
+          console.log('[USER-EDITED-FIELD] Flagged user pill selection by human click:', info.fieldName, info.value);
+          setTimeout(() => {
+            if (!isExecutingSequenceRef.current && !isSaarthiTypingRef.current && Date.now() - lastSaarthiTypingEndTimeRef.current >= 1500) {
+              handleManualEditCompletion(info.fieldName, info.value, 'PILL_CLICK');
+            }
+          }, 350);
+        }
+      }
+    };
+
+    document.addEventListener('input', handleInputOrChange, true);
+    document.addEventListener('change', handleInputOrChange, true);
+    document.addEventListener('blur', handleBlur, true);
+    document.addEventListener('click', handleClick, true);
+    return () => {
+      if (manualEditDebounceTimerRef.current) {
+        clearTimeout(manualEditDebounceTimerRef.current);
+      }
+      document.removeEventListener('input', handleInputOrChange, true);
+      document.removeEventListener('change', handleInputOrChange, true);
+      document.removeEventListener('blur', handleBlur, true);
+      document.removeEventListener('click', handleClick, true);
+    };
+  }, [stopAudioPlayback, sendWsMessage, setSaarthiState]);
+
+  const processNextStep = useCallback(() => {
+    if (sequenceQueueRef.current.length === 0) {
+      isExecutingSequenceRef.current = false;
+      const cursor = document.getElementById('saarthi-cursor');
+      if (cursor) {
+          // Keep cursor visible between questions. Only hide when the entire sequence is complete
+          // (meaning the final specialization field was filled) or if Saarthi is minimized.
+          const isComplete = lastTargetRef.current?.includes('pandit-spec');
+          if (isComplete) {
+              setTimeout(() => {
+                 cursor.style.opacity = '0';
+              }, 1200);
+          }
+      }
+      return;
+    }
+
+    isExecutingSequenceRef.current = true;
+    const step = sequenceQueueRef.current.shift()!;
+    console.log('[NAV-DEBUG] Executing step:', step);
+    if (step.target) {
+      lastTargetRef.current = step.target;
+    }
+
+    let cursor = document.getElementById('saarthi-cursor');
+    if (!cursor) {
+      cursor = document.createElement('div');
+      cursor.id = 'saarthi-cursor';
+      cursor.style.position = 'fixed'; // Use fixed so it tracks viewport coordinates
+      cursor.style.width = '24px';
+      cursor.style.height = '24px';
+      cursor.style.borderRadius = '50%';
+      cursor.style.backgroundColor = 'rgba(238, 124, 43, 0.6)';
+      cursor.style.border = '2px solid #ee7c2b';
+      cursor.style.boxShadow = '0 0 10px rgba(238, 124, 43, 0.5)';
+      cursor.style.zIndex = '99999';
+      cursor.style.pointerEvents = 'none';
+      cursor.style.transition = 'all 0.45s ease-in-out';
+      cursor.style.left = `${window.innerWidth / 2 - 12}px`;
+      cursor.style.top = `${window.innerHeight / 2 - 12}px`;
+      cursor.style.opacity = '0';
+      document.body.appendChild(cursor);
+    }
+
+    if (step.action === 'wait_for_selector' && step.target) {
+      let attempts = 0;
+      const checkInterval = setInterval(() => {
+        const el = document.querySelector(step.target);
+        attempts++;
+        if (el && el.getBoundingClientRect().width > 0) {
+          clearInterval(checkInterval);
+          setTimeout(processNextStep, step.delay);
+        } else if (attempts > 50) { // 5 seconds timeout
+          clearInterval(checkInterval);
+          console.warn('[NAV-DEBUG] Timeout waiting for selector:', step.target);
+          processNextStep();
+        }
+      }, 100);
+      return;
+    }
+
+    if (step.action === 'navigate' && step.path) {
+      // Hide cursor on page navigation to prevent floating cursor during load
+      cursor.style.opacity = '0';
+      isNavigatingRef.current = true;
+      navigate(step.path);
+      setTimeout(() => {
+        isNavigatingRef.current = false;
+        processNextStep();
+      }, step.delay);
+      return;
+    }
+
+    if (step.action === 'REFRESH_PAGE') {
+      console.log('[NAV-DEBUG] REFRESH_PAGE: Saving form state before reload to prevent data loss...');
+      // Synchronous save before reload: bypasses the 800ms debounce so latest values are never lost
+      try {
+        const existingSessionId = sessionStorage.getItem('saarthi_session_id') || ('manual_' + Date.now());
+        sessionStorage.setItem('saarthi_session_id', existingSessionId);
+        const existingDraftStr = sessionStorage.getItem('ms_saarthi_pandit_form_data');
+        const domFormData = getFormStateData();
+        if (domFormData && Object.keys(domFormData).length > 0) {
+          let existingData: any = {};
+          if (existingDraftStr) {
+            try { existingData = (JSON.parse(existingDraftStr).data) || {}; } catch (_) {}
+          }
+          const mergedData = { ...existingData, ...domFormData };
+          sessionStorage.setItem('ms_saarthi_pandit_form_data', JSON.stringify({
+            sessionId: existingSessionId,
+            data: mergedData,
+          }));
+          console.log('[REFRESH-SAVE] Saved', Object.keys(mergedData).length, 'fields before reload.');
+        }
+      } catch (saveErr) {
+        console.warn('[REFRESH-SAVE] Could not save form state before reload:', saveErr);
+      }
+      window.location.reload();
+      return;
+    }
+
+    if (step.action === 'scroll' && step.target) {
+      const targetEl = document.querySelector(step.target) as HTMLElement;
+      if (targetEl) {
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setTimeout(processNextStep, step.delay || 300);
+      } else {
+        console.warn('[NAV-DEBUG] Scroll target not found, gracefully staying at top:', step.target);
+        processNextStep();
+      }
+      return;
+    }
+
+    if (step.action === 'move' && step.target) {
+      const targetEl = document.querySelector(step.target) as HTMLElement;
+      if (targetEl) {
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        
+        // Short 150ms buffer for scroll to stabilize before calculating viewport center
+        setTimeout(() => {
+          const rect = targetEl.getBoundingClientRect();
+          const targetX = rect.left + rect.width / 2;
+          const targetY = rect.top + rect.height / 2;
+          
+          const currentX = parseFloat(cursor!.style.left) || (window.innerWidth / 2);
+          const currentY = parseFloat(cursor!.style.top) || (window.innerHeight / 2);
+          const dist = Math.hypot(targetX - currentX, targetY - currentY);
+          const moveDurationMs = Math.min(800, Math.max(300, Math.round(dist * 0.7)));
+
+          cursor!.style.transition = `left ${moveDurationMs}ms cubic-bezier(0.25, 1, 0.5, 1), top ${moveDurationMs}ms cubic-bezier(0.25, 1, 0.5, 1), opacity 200ms ease, transform 150ms ease`;
+          cursor!.style.opacity = '1';
+          cursor!.style.transform = 'scale(1)';
+          cursor!.style.backgroundColor = 'rgba(238, 124, 43, 0.6)';
+          cursor!.style.left = `${targetX - 12}px`;
+          cursor!.style.top = `${targetY - 12}px`;
+          
+          setTimeout(processNextStep, Math.max(step.delay || 150, moveDurationMs + 30));
+        }, 150);
+      } else {
+        console.warn('[NAV-DEBUG] Move target not found:', step.target);
+        processNextStep();
+      }
+      return;
+    }
+
+    if (step.action === 'click' && step.target) {
+      let targetEl = document.querySelector(step.target) as HTMLElement;
+      if (!targetEl && step.target.includes('submit')) {
+        targetEl = document.querySelector('[data-testid="button-submit-pandit-signup"], [data-testid="button-submit-signup"], form button[type="submit"], button[type="submit"]') as HTMLElement;
+      }
+      console.log(`[FORM-FILL-EXEC] Action: CLICK. Target: "${step.target}". ElementFound: ${!!targetEl}.`);
+      if (targetEl) {
+        const rect = targetEl.getBoundingClientRect();
+        const targetX = rect.left + rect.width / 2;
+        const targetY = rect.top + rect.height / 2;
+        
+        cursor.style.left = `${targetX - 12}px`;
+        cursor.style.top = `${targetY - 12}px`;
+        cursor.style.transform = 'scale(0.5)';
+        cursor.style.backgroundColor = 'rgba(238, 124, 43, 0.9)';
+        
+        targetEl.click();
+        console.log(`[FORM-FILL-PROOF] Click executed on: "${step.target}". Text: "${targetEl.textContent?.trim()}". ActiveAfter: "${targetEl.getAttribute('aria-pressed') || targetEl.className || 'clicked'}"`);
+        
+        setTimeout(() => {
+          cursor!.style.transform = 'scale(1)';
+          cursor!.style.backgroundColor = 'rgba(238, 124, 43, 0.6)';
+          lastSaarthiTypingEndTimeRef.current = Date.now();
+          setTimeout(processNextStep, step.delay);
+        }, 150);
+      } else {
+        console.warn('[NAV-DEBUG] Click target not found:', step.target);
+        lastSaarthiTypingEndTimeRef.current = Date.now();
+        processNextStep();
+      }
+      return;
+    }
+
+    if (step.action === 'open_dropdown' && step.target) {
+      const targetEl = document.querySelector(step.target) as HTMLSelectElement;
+      if (targetEl && targetEl.tagName.toLowerCase() === 'select') {
+        targetEl.scrollIntoView({ behavior: 'auto', block: 'center' });
+        setTimeout(() => {
+          // Open dropdown visually by setting size to options length
+          targetEl.size = targetEl.options.length || 4;
+          targetEl.focus();
+          setTimeout(processNextStep, step.delay);
+        }, 300);
+      } else {
+        console.warn('[NAV-DEBUG] open_dropdown target not found or not select:', step.target);
+        processNextStep();
+      }
+      return;
+    }
+
+    if (step.action === 'select_option' && step.target && step.text) {
+      const targetEl = document.querySelector(step.target) as HTMLSelectElement;
+      if (targetEl && targetEl.tagName.toLowerCase() === 'select') {
+        const options = Array.from(targetEl.options);
+        const matchVal = step.text.toLowerCase();
+        
+        let matchedIdx = options.findIndex(o => o.value.toLowerCase() === matchVal || o.text.toLowerCase() === matchVal);
+        if (matchedIdx === -1) {
+          // Fuzzy lookup
+          matchedIdx = options.findIndex(o => o.value.toLowerCase().includes(matchVal) || o.text.toLowerCase().includes(matchVal));
+        }
+        if (matchedIdx === -1) matchedIdx = 0;
+
+        const matchedOption = options[matchedIdx];
+        const selectRect = targetEl.getBoundingClientRect();
+        
+        let optX = selectRect.left + selectRect.width / 2;
+        let optY = selectRect.top + selectRect.height;
+
+        try {
+          const optRect = matchedOption.getBoundingClientRect();
+          if (optRect && optRect.height > 0) {
+            optX = optRect.left + optRect.width / 2;
+            optY = optRect.top + optRect.height / 2;
+          } else {
+            const optionHeight = 24; // fallback item height
+            optY = selectRect.top + selectRect.height + matchedIdx * optionHeight + optionHeight / 2;
+          }
+        } catch (e) {
+          const optionHeight = 24;
+          optY = selectRect.top + selectRect.height + matchedIdx * optionHeight + optionHeight / 2;
+        }
+
+        // Move cursor to option visual center
+        cursor.style.opacity = '1';
+        cursor.style.transform = 'scale(1)';
+        cursor.style.backgroundColor = 'rgba(238, 124, 43, 0.6)';
+        cursor.style.left = `${optX - 12}px`;
+        cursor.style.top = `${optY - 12}px`;
+
+        // Hover delay to simulate choosing
+        setTimeout(() => {
+          cursor.style.transform = 'scale(0.5)';
+          cursor.style.backgroundColor = 'rgba(238, 124, 43, 0.9)';
+          
+          targetEl.selectedIndex = matchedIdx;
+          targetEl.dispatchEvent(new Event('input', { bubbles: true }));
+          targetEl.dispatchEvent(new Event('change', { bubbles: true }));
+
+          setTimeout(() => {
+            cursor.style.transform = 'scale(1)';
+            cursor.style.backgroundColor = 'rgba(238, 124, 43, 0.6)';
+            
+            // Collapse dropdown back to normal select
+            targetEl.size = 1;
+            targetEl.classList.add('saarthi-highlight');
+            
+            setTimeout(() => {
+              targetEl.classList.remove('saarthi-highlight');
+              lastSaarthiTypingEndTimeRef.current = Date.now();
+              setTimeout(processNextStep, step.delay);
+            }, 600);
+          }, 150);
+        }, 600);
+      } else {
+        console.warn('[NAV-DEBUG] select_option target not found or not select:', step.target);
+        lastSaarthiTypingEndTimeRef.current = Date.now();
+        processNextStep();
+      }
+      return;
+    }
+
+    if (step.action === 'type' && step.target && step.text) {
+      isSaarthiTypingRef.current = true;
+      const targetEl = document.querySelector(step.target) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+      console.log(`[FORM-FILL-EXEC] Action: TYPE. Target: "${step.target}". ElementFound: ${!!targetEl}. ValueToSet: "${step.text}"`);
+      if (targetEl) {
+         if ((targetEl as HTMLInputElement).type === 'file') {
+            console.log('[FORM-FILL-EXEC] Target element is type="file". Providing visual cue instead of typing.');
+            
+            const rect = targetEl.getBoundingClientRect();
+            const targetX = rect.left + rect.width / 2;
+            const targetY = rect.top + rect.height / 2;
+            cursor.style.left = `${targetX - 12}px`;
+            cursor.style.top = `${targetY - 12}px`;
+            cursor.classList.add('cursor-active');
+
+            const visualTarget = (targetEl.closest('label') || targetEl.closest('.field') || targetEl.parentElement || targetEl) as HTMLElement;
+            
+            const originalOutline = visualTarget.style.outline;
+            const originalBoxShadow = visualTarget.style.boxShadow;
+            const originalTransition = visualTarget.style.transition;
+            
+            visualTarget.style.transition = 'all 0.3s ease';
+            visualTarget.style.outline = '3px solid #ee7c2b';
+            visualTarget.style.boxShadow = '0 0 15px rgba(238, 124, 43, 0.5)';
+            visualTarget.style.borderRadius = '8px';
+            
+            setTimeout(() => {
+               visualTarget.style.outline = originalOutline;
+               visualTarget.style.boxShadow = originalBoxShadow;
+               visualTarget.style.transition = originalTransition;
+               cursor.classList.remove('cursor-active');
+               isSaarthiTypingRef.current = false;
+               lastSaarthiTypingEndTimeRef.current = Date.now();
+               processNextStep();
+            }, 4000);
+            return;
+         }
+         const rect = targetEl.getBoundingClientRect();
+         const targetX = rect.left + rect.width / 2;
+         const targetY = rect.top + rect.height / 2;
+         
+         cursor.style.left = `${targetX - 12}px`;
+         cursor.style.top = `${targetY - 12}px`;
+         
+         // In React 18, input value setters are defined on the instance proto
+         let nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+         if (targetEl.tagName.toLowerCase() === 'textarea') {
+             nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+         } else if (targetEl.tagName.toLowerCase() === 'select') {
+             nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
+         }
+
+         // Clear previous highlights before typing new field value
+         document.querySelectorAll('.saarthi-highlight').forEach((el) => {
+           el.classList.remove('saarthi-highlight');
+         });
+         targetEl.classList.add('saarthi-highlight');
+         console.log('[FORM-FILL-EXEC] Applied saarthi-highlight class to target:', step.target);
+
+         // For select elements: set value instantly (no char-by-char)
+         if (targetEl.tagName.toLowerCase() === 'select') {
+           if (nativeInputValueSetter) {
+             nativeInputValueSetter.call(targetEl, step.text);
+           } else {
+             (targetEl as HTMLSelectElement).value = step.text;
+           }
+           targetEl.dispatchEvent(new Event('input', { bubbles: true }));
+           targetEl.dispatchEvent(new Event('change', { bubbles: true }));
+           setTimeout(() => {
+             targetEl.classList.remove('saarthi-highlight');
+             targetEl.classList.add('saarthi-filled');
+             isSaarthiTypingRef.current = false;
+             lastSaarthiTypingEndTimeRef.current = Date.now();
+             processNextStep();
+           }, 400);
+           return;
+         }
+
+         const convertSpokenEmailToText = (spoken: string) => {
+           if (!spoken) return '';
+           return spoken
+             .toLowerCase()
+             .replace(/\s+at\s+/g, '@')
+             .replace(/\b(at the rate|at rate)\b/g, '@')
+             .replace(/\s+dot\s+/g, '.')
+             .replace(/\s+underscore\s+/g, '_')
+             .replace(/\s+dash\s+/g, '-')
+             .replace(/\s+hyphen\s+/g, '-')
+             .replace(/\s+/g, '');
+         };
+
+         // Ensure typed text is ALWAYS in English/Roman letters (never Devanagari script)
+         const ensureRomanText = (str: string) => {
+           if (!str) return str;
+           if (/[\u0900-\u097F]/.test(str)) {
+             const devMap: Record<string, string> = {
+               'अ':'a', 'आ':'aa', 'इ':'i', 'ई':'ee', 'उ':'u', 'ऊ':'oo', 'ऋ':'ri', 'ए':'e', 'ऐ':'ai', 'ओ':'o', 'औ':'au',
+               'क':'k', 'ख':'kh', 'ग':'g', 'घ':'gh', 'ङ':'ng', 'च':'ch', 'छ':'chh', 'ज':'j', 'झ':'jh', 'ञ':'nya',
+               'ट':'t', 'ठ':'th', 'ड':'d', 'ढ':'dh', 'ण':'n', 'त':'t', 'थ':'th', 'द':'d', 'ध':'dh', 'न':'n',
+               'प':'p', 'फ':'ph', 'ब':'b', 'भ':'bh', 'म':'m', 'य':'y', 'र':'r', 'ल':'l', 'व':'v', 'श':'sh', 'ष':'sh', 'स':'s', 'ह':'h',
+               'ा':'a', 'ि':'i', 'ी':'ee', 'ु':'u', 'ू':'oo', 'ृ':'ri', 'े':'e', 'ै':'ai', 'ो':'o', 'ौ':'au', 'ं':'n', 'ँ':'n', '्':''
+             };
+             return str.split('').map(c => devMap[c] || (c >= '\u0900' && c <= '\u097F' ? '' : c)).join('').trim();
+           }
+           return str;
+         };
+
+         // ── CHARACTER-BY-CHARACTER TYPING ANIMATION ──
+         let rawText = step.text as string;
+         if (step.target && step.target.includes('email')) {
+           rawText = convertSpokenEmailToText(rawText);
+         }
+         const fullText = (step.target && (step.target.includes('bio') || step.target.includes('achieve'))) ? rawText : ensureRomanText(rawText);
+
+         const charDelay = Math.min(60, Math.max(30, 1200 / fullText.length)); // 30-60ms per char, total ~1-2s
+         let charIndex = 0;
+
+         // Focus the field so cursor blink is visible
+         (targetEl as HTMLInputElement).focus();
+
+         const typeNextChar = () => {
+            if (charIndex > fullText.length) {
+              // Typing complete: add filled glow, clear any validation errors, and advance sequence
+              targetEl.classList.add('saarthi-filled');
+              targetEl.removeAttribute('aria-invalid');
+              const fieldContainer = targetEl.closest('.form-field, .form-group, div');
+              if (fieldContainer) {
+                const fieldErrorMsg = fieldContainer.querySelector('.field-error, [role="alert"]');
+                if (fieldErrorMsg) fieldErrorMsg.remove();
+              }
+
+              const tracker = (targetEl as any)._valueTracker;
+              if (tracker) tracker.setValue('');
+              targetEl.dispatchEvent(new Event('input', { bubbles: true }));
+              targetEl.dispatchEvent(new Event('change', { bubbles: true }));
+              console.log(`[FORM-FILL-PROOF] Final Char-by-char typing complete for target="${step.target}" | Final DOM Value="${(targetEl as HTMLInputElement).value}"`);
+              if (step.target === 'pandit-bio' || (targetEl as HTMLElement).id === 'pandit-bio') {
+                console.log(`[BIO-FIDELITY-PROOF] Target: "${step.target}" | Final DOM Value: "${(targetEl as HTMLInputElement).value}"`);
+              }
+              isSaarthiTypingRef.current = false;
+              lastSaarthiTypingEndTimeRef.current = Date.now();
+              setTimeout(processNextStep, step.delay || 400);
+              return;
+            }
+
+            const currentVal = fullText.slice(0, charIndex);
+
+            const tracker = (targetEl as any)._valueTracker;
+            if (tracker) tracker.setValue('');
+
+            if (nativeInputValueSetter) {
+              nativeInputValueSetter.call(targetEl, currentVal);
+            } else {
+              (targetEl as HTMLInputElement).value = currentVal;
+            }
+
+            // Fire input & change events so React's onChange / controlled input updates
+            targetEl.dispatchEvent(new Event('input', { bubbles: true }));
+            targetEl.dispatchEvent(new Event('change', { bubbles: true }));
+
+            console.log(`[FORM-FILL-PROOF] Typing target="${step.target}" | Char ${charIndex}/${fullText.length} | Val="${currentVal}" | DOM Val="${(targetEl as HTMLInputElement).value}"`);
+
+            charIndex++;
+            setTimeout(typeNextChar, charDelay);
+          };
+
+          typeNextChar();
+      } else {
+         console.warn('[NAV-DEBUG] Type target not found:', step.target);
+         isSaarthiTypingRef.current = false;
+         lastSaarthiTypingEndTimeRef.current = Date.now();
+         processNextStep();
+      }
+      return;
+    }
+
+    processNextStep();
+  }, [navigate]);
+
+  const processNextStepRef = useRef(processNextStep);
+  useEffect(() => {
+    processNextStepRef.current = processNextStep;
+  }, [processNextStep]);
+
+  const runSequence = useCallback((seq: any[]) => {
+    if (seq && seq.length > 0) {
+      console.log('[NAV-SEQUENCE] Queuing navigation action sequence with', seq.length, 'steps:', seq);
+      sequenceQueueRef.current = seq;
+      if (!isExecutingSequenceRef.current) {
+        processNextStepRef.current();
+      }
+    }
+  }, []);
+
+  const connectWebSocket = useCallback(async (ticketRetryCount: number = 0) => {
+    if (!isVoiceEnabledRef.current) {
+      console.log('[Voice] Skipping connectWebSocket because voice is disabled');
+      return;
+    }
+    const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+
+    // Prevent duplicate in-flight reconnection attempts
+    if (isConnectingRef.current) {
+      console.log('[Voice] Reconnect/Connect already in progress. Debouncing duplicate attempt.');
+      return;
+    }
+
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.CONNECTING || wsRef.current.readyState === WebSocket.OPEN)) {
+      console.log('[Voice] WebSocket is already CONNECTING or OPEN. Skipping connect.');
+      return;
+    }
+
+    isConnectingRef.current = true;
+    hasAnnouncedRateLimitRef.current = false;
+
+    // ── 1. Fetch Ephemeral Voice Ticket from Backend ──
+    let ticket = '';
+    try {
+      console.log('[Voice] Fetching ephemeral voice ticket from backend (/voice/ticket)...');
+      const ticketRes = await apiClient.post('/voice/ticket');
+      ticket = ticketRes.data?.ticket;
+      console.log('[Voice] Voice ticket obtained successfully, type:', ticketRes.data?.type);
+    } catch (ticketErr: any) {
+      console.error('[Voice] Failed to obtain voice ticket from backend:', ticketErr);
+      isConnectingRef.current = false;
+      setError('Voice service abhi available nahi hai. Kripya thodi der baad koshish karein.');
+      return;
+    }
+
+    if (!ticket) {
+      console.error('[Voice] No ticket in response from backend');
+      isConnectingRef.current = false;
+      setError('Voice service abhi available nahi hai.');
+      return;
+    }
+
+    const wsUrl = `${apiBase.replace('http', 'ws')}/ws/voice?ticket=${encodeURIComponent(ticket)}`;
+    
+    if (connectionTimeoutRef.current) {
+      clearTimeout(connectionTimeoutRef.current);
+    }
+    connectionTimeoutRef.current = setTimeout(() => {
+      if (isConnectingRef.current && wsRef.current && wsRef.current.readyState === WebSocket.CONNECTING) {
+        console.warn('[Voice] Connection attempt timed out. Resetting connection state and forcing retry.');
+        isConnectingRef.current = false;
+        wsRef.current.onclose = null;
+        wsRef.current.onerror = null;
+        wsRef.current.close();
+        wsRef.current = null;
+        
+        // Trigger a fresh reconnect attempt
+        const delay = 1000;
+        console.log(`[Voice] Scheduling WebSocket auto-reconnect after timeout in ${delay} ms`);
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current);
+        }
+        reconnectTimerRef.current = setTimeout(() => {
+          connectWebSocket();
+        }, delay);
+      }
+    }, 5000);
+
+    console.log('[Voice] Opening WebSocket connection to:', wsUrl.replace(/ticket=[^&]+/, 'ticket=[PROTECTED]'));
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+    (window as any).__saarthiWs = ws;
+    (window as any).__saarthiDispatchMsg = (msg: any) => {
+      if (ws.onmessage) {
+        ws.onmessage(new MessageEvent('message', { data: JSON.stringify(msg) }));
+      }
+    };
+
+    ws.onopen = () => {
+      console.log('[Voice] WebSocket Connected successfully.');
+      isConnectingRef.current = false;
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
+      reconnectAttemptsRef.current = 0;
+      setIsConnected(true);
+      updateSessionReady(false);
+
+      let persistentSessionId = sessionStorage.getItem('saarthi_session_id');
+      if (!persistentSessionId) {
+        persistentSessionId = 'vsession_f' + Math.random().toString(36).substring(2, 14);
+        sessionStorage.setItem('saarthi_session_id', persistentSessionId);
+        // Fresh voice session generated -> actively clear any stale draft from sessionStorage
+        sessionStorage.removeItem('ms_saarthi_pandit_form_data');
+      }
+      userEditedFieldsRef.current.clear();
+      dirtyFieldsRef.current.clear();
+      console.log('[Voice] Sending CONNECT with session_id:', persistentSessionId, 'current_page:', window.location.pathname);
+
+      // Always read fresh wsRef.current at send time!
+      const sent = sendWsMessage({
+        type: 'CONNECT',
+        payload: {
+          language: 'hi',
+          session_id: persistentSessionId,
+          current_page: window.location.pathname + window.location.search,
+        },
+      });
+
+      if (!sent) {
+        console.warn('[Voice] CONNECT frame could not be sent on ws.onopen!');
+      }
+    };
+
+    ws.onmessage = async (event: MessageEvent) => {
+        if (!isVoiceEnabledRef.current) {
+          console.log('[Voice] Discarding incoming WebSocket message because voice is disabled');
+          return;
+        }
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'PING') {
+            sendWsMessage({ type: 'PONG' });
+            return;
+          }
+          // [DIAGNOSTIC] Log every single message type and AI_RESPONSE payload explicitly
+          if (msg.type === 'AI_RESPONSE') {
+             console.log(`[WS-RECEIVE-AI_RESPONSE] [${new Date().toISOString()}] req_id=${msg?.request_id} payload:`, JSON.stringify(msg.payload));
+             console.log('[DIAGNOSTIC] FULL RAW AI_RESPONSE PAYLOAD:', JSON.stringify(msg.payload));
+             // BUG-11.1 FIX: Cancel thinking watchdog — response arrived, no freeze
+             if (thinkingWatchdogRef.current) {
+               clearTimeout(thinkingWatchdogRef.current);
+               thinkingWatchdogRef.current = null;
+               console.log('[FREEZE-RECOVERY] Watchdog cancelled — AI_RESPONSE received in time.');
+             }
+          }
+          if (!msg.type) return;
+
+          console.log(`[Voice] Received message type: ${msg.type}`);
+          if (msg.type === 'ERROR') {
+             console.error('[Voice] [ERROR-PAYLOAD] Received ERROR envelope from backend:', JSON.stringify(msg.payload || msg));
+             const errPayload = msg.payload || {};
+             const errCode = errPayload.code || '';
+             const errMsg = errPayload.message || '';
+             const isRateLimitErr =
+               errCode === 'RATE_LIMIT_EXCEEDED' ||
+               errMsg.toLowerCase().includes('rate limit') ||
+               errMsg.toLowerCase().includes('403') ||
+               errMsg.includes('Bahut zyada attempts');
+
+             if (isRateLimitErr) {
+               isRateLimitedRef.current = true;
+               const displayMsg = 'Bahut zyada attempts ho gaye hain, kripya thodi der baad try karein';
+               if (!hasAnnouncedRateLimitRef.current) {
+                 hasAnnouncedRateLimitRef.current = true;
+                 announceMessage(displayMsg, false);
+                 setError(displayMsg);
+               }
+               return;
+             }
+          }
+
+          // FIX 2: Handle explicit PLAYBACK_STOP / INTERRUPT frame from backend on barge-in
+          if (msg.type === 'PLAYBACK_STOP' || msg.type === 'INTERRUPT') {
+             console.log('[Voice] Received PLAYBACK_STOP/INTERRUPT frame from backend. Halting audio and purging local queues.');
+             stopAudioPlayback();
+             return;
+          }
+
+          // Check if this response belongs to an abandoned request
+          if (msg.request_id) {
+             const reqId = msg.request_id;
+             if (abandonedRequestsRef.current.has(reqId)) {
+                console.log(`[Voice] Ignoring late ${msg.type} because request ${reqId} was abandoned due to timeout.`);
+                return;
+             }
+          }
+
+          // ----------- TRANSCRIPT handling -----------------------------------
+          if (msg.type === 'TRANSCRIPT') {
+            const { text, is_final, stt_language, stt_provider } = msg.payload as { text: string; is_final: boolean; stt_language?: string; stt_provider?: string };
+            console.log('[Voice] TRANSCRIPT', is_final ? 'final' : 'partial', text);
+            console.log(`[TRANSCRIPT-DIAGNOSTIC] Text: "${text}" | Language: ${stt_language || 'unknown'} | Provider: ${stt_provider || 'inworld'}`);
+            // Bug 2 Fix: Do not render live user transcript in dialogue bubble
+            // setDialogueText(text);
+            
+            // BARGE-IN / INTERRUPTION: Flush any active tour or sequence when user speaks
+            if (sequenceQueueRef.current.length > 0) {
+              console.log('[BARGE-IN] Interrupted active sequence queue due to new user speech.');
+              sequenceQueueRef.current = [];
+              isExecutingSequenceRef.current = false;
+              isSaarthiTypingRef.current = false;
+            }
+
+            if (is_final) {
+              setSaarthiState('idle'); // Wait for AI_RESPONSE
+              // Auto-minimize on first command
+              console.log('[WIDGET] Shrink condition check (TRANSCRIPT): is_final=true, _hasMinimizedOnce=', (window as any)._hasMinimizedOnce);
+              if (!(window as any)._hasMinimizedOnce) {
+                  console.log('[WIDGET] Triggering shrink-to-corner animation now (via TRANSCRIPT)');
+                  forceMinimize();
+                  (window as any)._hasMinimizedOnce = true;
+              }
+            }
+            return;
+          }
+
+          // ----------- CONNECTED handling -----------------------------------
+          if (msg.type === 'CONNECTED') {
+            console.log('[Voice] CONNECTED received from backend. Session handshake READY.');
+            updateSessionReady(true);
+            return;
+          }
+
+          // ----------- AI_RESPONSE handling -----------------------------------
+          if (msg.type === 'AI_RESPONSE') {
+            if (!isSessionReadyRef.current) {
+              updateSessionReady(true);
+            }
+            console.log('[Voice] [CONNECT-DIAGNOSTIC] RAW AI_RESPONSE Received:', JSON.stringify(msg.payload));
+            if (msg.payload?.active_field === 'pandit-bio' || msg.payload?.target === 'pandit-bio' || activeFieldRef.current === 'pandit-bio') {
+              console.log('[BIO-TRACE] Full AI_RESPONSE payload for bio:', JSON.stringify(msg.payload));
+              console.log(`[BIO-FIDELITY-DIAGNOSTIC] active_field="${msg.payload?.active_field || activeFieldRef.current}" | query="${msg.payload?.query || ''}" | language="${msg.payload?.stt_language || 'unknown'}"`);
+            }
+            let contentStr = msg.payload.content || '';
+            
+            let action = msg.payload.action || (msg.payload.navigation_directive && msg.payload.navigation_directive.action) || null;
+            let target = msg.payload.target || (msg.payload.navigation_directive && msg.payload.navigation_directive.target) || null;
+            let intent = msg.payload.intent || (msg.payload.navigation_directive && msg.payload.navigation_directive.intent) || null;
+            let query = msg.payload.query || (msg.payload.navigation_directive && msg.payload.navigation_directive.query) || null;
+            let service = msg.payload.service || (msg.payload.navigation_directive && msg.payload.navigation_directive.service) || null;
+            let location = msg.payload.location || (msg.payload.navigation_directive && msg.payload.navigation_directive.location) || null;
+            let activeField = msg.payload.active_field || (msg.payload.navigation_directive && msg.payload.navigation_directive.active_field) || null;
+            
+            try {
+              const parsed = JSON.parse(contentStr);
+              if (!action && parsed.action) action = parsed.action;
+              if (!target && parsed.target) target = parsed.target;
+              if (!intent && parsed.intent) intent = parsed.intent;
+              if (!query && parsed.query) query = parsed.query;
+              if (!service && parsed.service) service = parsed.service;
+              if (!location && parsed.location) location = parsed.location;
+              if (!activeField && parsed.active_field) activeField = parsed.active_field;
+              if (parsed.response_text) contentStr = parsed.response_text;
+            } catch (e) {}
+
+            console.log('[DEBUG-PAYLOAD-EXTRACT] Extracted action:', action, 'target:', target, 'service:', service, 'location:', location, 'activeField:', activeField, 'intent:', intent);
+
+            // ── HIGHLIGHT TRIGGER & GENERALIZED DROPDOWN AUTO-EXPAND ON BOT QUESTION ASK ──
+            if (activeField) {
+              activeFieldRef.current = activeField;
+              // ── STEP MAPPING & UI STEP SYNCHRONIZATION ──
+              const step2Fields = ['pandit-exp', 'pandit-gurukul', 'pandit-education', 'pandit-languages', 'pandit-spec', 'pandit-achievements', 'pandit-bio'];
+              const step3Fields = ['pandit-certFile', 'pandit-aadhaarFile', 'pandit-galleryFiles', 'pandit-password', 'pandit-confirm', 'pandit-code-of-conduct'];
+
+              let targetStep: 1 | 2 | 3 = 1;
+              if (step2Fields.includes(activeField)) targetStep = 2;
+              else if (step3Fields.includes(activeField)) targetStep = 3;
+
+              console.log(`[NAV-SYNC-TRACE] Active field received: "${activeField}" -> Computed Step: ${targetStep}. Dispatching saarthi-set-step event.`);
+              window.dispatchEvent(new CustomEvent('saarthi-set-step', { detail: { step: targetStep, activeField } }));
+
+              // Only update highlight when activeField genuinely shifts to prevent flicker
+              if (lastHighlightedFieldRef.current !== activeField) {
+                lastHighlightedFieldRef.current = activeField;
+                requestAnimationFrame(() => {
+                  setTimeout(() => {
+                    document.querySelectorAll('.saarthi-highlight').forEach((el) => {
+                      el.classList.remove('saarthi-highlight');
+                    });
+                    document.querySelectorAll('.saarthi-options-list').forEach((el) => {
+                      el.remove();
+                    });
+
+                    let highlightSelector = '';
+                    const isPanditField = activeField.startsWith('pandit-') || !!document.querySelector('[data-testid="tab-usertype-pandit"][aria-pressed="true"]');
+                    
+                    if (activeField === 'pandit-avatar') {
+                      highlightSelector = '[data-testid="input-pandit-avatar"], #pandit-avatar';
+                    } else if (activeField === 'pandit-first-name') {
+                      highlightSelector = '[data-testid="input-pandit-first-name"], #pandit-first-name';
+                    } else if (activeField === 'pandit-last-name') {
+                      highlightSelector = '[data-testid="input-pandit-last-name"], #pandit-last-name';
+                    } else if (activeField === 'pandit-gender') {
+                      highlightSelector = '[data-testid="pill-group-pandit-gender"]';
+                    } else if (activeField === 'pandit-availability') {
+                      highlightSelector = '[data-testid="pill-group-pandit-availability"]';
+                    } else if (activeField === 'pandit-service-areas') {
+                      highlightSelector = '[data-testid="pill-group-pandit-service-areas"]';
+                    } else if (activeField === 'pandit-languages') {
+                      highlightSelector = '[data-testid="pill-group-pandit-languages"]';
+                    } else if (activeField === 'pandit-spec') {
+                      highlightSelector = '[data-testid="pill-group-pandit-spec"]';
+                    } else if (activeField === 'pandit-certFile') {
+                      highlightSelector = '[data-testid="upload-pandit-certFile"]';
+                    } else if (activeField === 'pandit-aadhaarFile') {
+                      highlightSelector = '[data-testid="upload-pandit-aadhaarFile"]';
+                    } else if (activeField === 'pandit-galleryFiles') {
+                      highlightSelector = '[data-testid="upload-pandit-galleryFiles"]';
+                    } else if (activeField === 'pandit-password') {
+                      highlightSelector = '[data-testid="input-pandit-password"], #pandit-password';
+                    } else if (activeField === 'pandit-confirm') {
+                      highlightSelector = '[data-testid="input-pandit-confirm"], #pandit-confirm';
+                    } else if (activeField.includes('name')) {
+                      highlightSelector = isPanditField ? '[data-testid="input-pandit-name"]' : '#devotee-name, [data-testid="input-name"]';
+                    } else if (activeField.includes('phone') || activeField.includes('mobile')) {
+                      highlightSelector = isPanditField ? '[data-testid="input-pandit-phone"]' : 'input[type="tel"], [data-testid="input-phone"]';
+                    } else if (activeField.includes('email')) {
+                      highlightSelector = isPanditField ? '[data-testid="input-pandit-email"]' : 'input[type="email"], [data-testid="input-email"]';
+                    } else if (activeField.includes('city')) {
+                      highlightSelector = isPanditField ? '[data-testid="input-pandit-city"]' : '[data-testid="input-city"]';
+                    } else if (activeField.includes('state')) {
+                      highlightSelector = isPanditField ? '[data-testid="input-pandit-state"]' : '[data-testid="input-state"]';
+                    } else if (activeField.includes('exp')) {
+                      highlightSelector = '[data-testid="input-pandit-exp"], #pandit-exp, [data-testid="select-pandit-exp"]';
+                    } else if (activeField === 'pandit-bio' || activeField.includes('bio')) {
+                      highlightSelector = '#pandit-bio, [data-testid="textarea-pandit-bio"]';
+                    } else {
+                      highlightSelector = `#${activeField}, [data-testid="input-${activeField}"], [data-testid="select-${activeField}"]`;
+                    }
+
+                    const targetHighlightEl = document.querySelector(highlightSelector) as HTMLElement | null;
+                    console.log('[DEBUG-HIGHLIGHT-TARGET] activeField:', activeField, 'selector:', highlightSelector, 'found:', !!targetHighlightEl, 'tagName:', targetHighlightEl?.tagName);
+
+                    if (targetHighlightEl) {
+                      targetHighlightEl.classList.add('saarthi-highlight');
+                      targetHighlightEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      const count = document.querySelectorAll('.saarthi-highlight').length;
+                      console.log('[PROOF-FEATURE-A] activeFieldId:', activeField, '| Highlighted Element:', targetHighlightEl.id || targetHighlightEl.getAttribute('data-testid') || targetHighlightEl.tagName, '| Total .saarthi-highlight count in DOM:', count);
+
+                      // ── GENERALIZED DROPDOWN DETECTION & INLINE OPTIONS RENDERING ──
+                      const selectEl = (targetHighlightEl.tagName === 'SELECT' ? targetHighlightEl : targetHighlightEl.querySelector('select')) as HTMLSelectElement | null;
+                      console.log('[DEBUG-DROPDOWN-CHECK] activeField:', activeField, 'selectEl:', selectEl?.tagName, 'optionsCount:', selectEl?.options?.length);
+
+                      if (selectEl && selectEl.options && selectEl.options.length > 0) {
+                        const parentContainer = selectEl.closest('.field') || selectEl.parentElement || targetHighlightEl;
+                        if (parentContainer && !parentContainer.querySelector('.saarthi-options-list')) {
+                          const optionsContainer = document.createElement('div');
+                          optionsContainer.className = 'saarthi-options-list';
+                          optionsContainer.setAttribute('data-testid', `options-container-${activeField}`);
+                          optionsContainer.style.cssText = 'display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; padding: 0.5rem; background: #fff8f0; border: 1.5px solid #ee7c2b; border-radius: 0.5rem; box-shadow: 0 4px 12px rgba(238,124,43,0.15); transition: all 0.2s ease;';
+
+                          Array.from(selectEl.options).forEach((opt) => {
+                            if (!opt.value && opt.disabled) return;
+                            const pillBtn = document.createElement('button');
+                            pillBtn.type = 'button';
+                            pillBtn.className = 'saarthi-option-pill';
+                            pillBtn.setAttribute('data-testid', `option-pill-${opt.value}`);
+                            pillBtn.innerText = opt.text || opt.value;
+                            const isSelected = selectEl.value === opt.value;
+                            pillBtn.style.cssText = `padding: 0.45rem 0.85rem; border-radius: 0.4rem; font-size: 0.82rem; font-weight: 700; cursor: pointer; border: 1px solid ${isSelected ? '#ee7c2b' : '#e0d5c5'}; background: ${isSelected ? '#ee7c2b' : '#ffffff'}; color: ${isSelected ? '#ffffff' : '#4a3b32'}; box-shadow: ${isSelected ? '0 2px 6px rgba(238,124,43,0.3)' : '0 1px 3px rgba(0,0,0,0.05)'}; transition: all 150ms ease;`;
+
+                            pillBtn.onclick = () => {
+                              const nativeSelectSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
+                              if (nativeSelectSetter) {
+                                nativeSelectSetter.call(selectEl, opt.value);
+                              } else {
+                                selectEl.value = opt.value;
+                              }
+                              selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+                              selectEl.dispatchEvent(new Event('input', { bubbles: true }));
+                              console.log('[DROPDOWN-TAP] Selected option:', opt.value, 'for activeField:', activeField);
+                              optionsContainer.querySelectorAll('.saarthi-option-pill').forEach((btn) => {
+                                const b = btn as HTMLElement;
+                                b.style.background = '#ffffff';
+                                b.style.color = '#4a3b32';
+                                b.style.borderColor = '#e0d5c5';
+                              });
+                              pillBtn.style.background = '#ee7c2b';
+                              pillBtn.style.color = '#ffffff';
+                              pillBtn.style.borderColor = '#ee7c2b';
+                            };
+
+                            optionsContainer.appendChild(pillBtn);
+                          });
+
+                          parentContainer.appendChild(optionsContainer);
+                          console.log('[PROOF-FEATURE-B] Dropdown options rendered visibly in DOM for activeField:', activeField, '| Total option pills rendered:', optionsContainer.children.length);
+                        }
+                      }
+                    }
+                  }, 50);
+                });
+              }
+            } else if (action === 'SUBMIT_FORM' || contentStr.toLowerCase().includes('confirm kar lete hain')) {
+              document.querySelectorAll('.saarthi-highlight').forEach((el) => {
+                el.classList.remove('saarthi-highlight');
+              });
+              document.querySelectorAll('.saarthi-options-list').forEach((el) => {
+                el.remove();
+              });
+            }
+
+            // ── REFRESH_PAGE ACTION HANDLER ──
+            if (action === 'REFRESH_PAGE') {
+              console.log('[PROOF-FEATURE-C] Executing REFRESH_PAGE action directive -> window.location.reload() called!');
+              setTimeout(() => {
+                window.location.reload();
+              }, 1000);
+            }
+
+            // ── GREETING & CEREMONIAL VISUAL MOMENT: Trigger 'greeting' avatar animation ──
+            const isGreetingResponse = intent === 'GREETING' || msg.payload.intent === 'GREETING' || contentStr.toLowerCase().includes('namaste') || contentStr.toLowerCase().includes('om namah shivaya');
+            if (isGreetingResponse) {
+              console.log('[Voice] [CONNECT-DIAGNOSTIC] Initial Greeting response received. Triggering greeting avatar animation.');
+              action = null;
+              target = null;
+              beginGreetingTtsVisual(contentStr);
+              stateRef.current = 'greeting';
+              setSaarthiState('greeting');
+            }
+
+            // ── COMPLETION VISUAL MOMENT: Trigger 'namaste' avatar bow on onboarding handoff / summary ──
+            const isSummaryOrCompletion = (contentStr.toLowerCase().includes('password') && contentStr.toLowerCase().includes('documents')) ||
+                                          contentStr.toLowerCase().includes('confirm kar lete hain') ||
+                                          contentStr.toLowerCase().includes('dhanyawad') ||
+                                          contentStr.toLowerCase().includes('complete ho gaya');
+            if (isSummaryOrCompletion) {
+              console.log('[Voice] [VISUAL-MOMENT] Onboarding summary/completion handoff detected. Triggering Namaste bow animation on avatar!');
+              setSaarthiState('namaste' as any);
+              setTimeout(() => {
+                setSaarthiState('speaking');
+              }, 1500);
+            }
+
+            console.log('[Voice] --------------------------------------------------');
+            console.log('[Voice] AI_RESPONSE NAVIGATION CHECK:');
+            console.log('[Voice] Raw Target:', target);
+            console.log('[Voice] Raw Action:', action);
+            console.log('[Voice] Intent:', intent);
+            console.log('[Voice] Query:', query);
+
+            // 🚨 PANDIT ONBOARDING ROUTE CHECK: Ensure frontend navigates to /signup?role=pandit
+            const isPanditOnboardingIntent = intent === 'PANDIT_ONBOARDING' ||
+              (typeof target === 'string' && (target.includes('/signup') || target.includes('/sign-up') || target.includes('pandit'))) ||
+              (typeof activeField === 'string' && activeField.startsWith('pandit-'));
+
+            if (isPanditOnboardingIntent && !window.location.pathname.startsWith('/signup') && !window.location.pathname.startsWith('/sign-up')) {
+              console.log(`[PANDIT-NAV] Auto-navigating to Pandit onboarding route (/signup?role=pandit) for intent: ${intent}`);
+              navigate('/signup?role=pandit');
+              setTimeout(() => {
+                const formSection = document.querySelector('.registration-form') 
+                || document.querySelector('form') 
+                || document.querySelector('[data-section="personal-info"]');
+                if (formSection) {
+                  formSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+              }, 500);
+            }
+
+
+
+            if (activeField) {
+              activeFieldRef.current = activeField;
+              const step2Fields = ['exp', 'gurukul', 'education', 'spec', 'lang', 'achievements', 'bio'];
+              const step3Fields = ['certfile', 'aadhaarfile', 'galleryfiles', 'password', 'confirm', 'code-of-conduct', 'conduct'];
+              
+              let targetStep: 1 | 2 | 3 = 1;
+              const fieldLower = activeField.toLowerCase();
+              if (step2Fields.some(f => fieldLower.includes(f))) targetStep = 2;
+              if (step3Fields.some(f => fieldLower.includes(f))) targetStep = 3;
+
+              const payloadFields = (msg.payload && msg.payload.fields) || [];
+              const hasStep1FieldsInPayload = payloadFields.some((f: any) => {
+                const t = ((f && f.target) || '').toLowerCase();
+                return t.includes('city') || t.includes('state') || t.includes('name') || t.includes('phone') || t.includes('email') || t.includes('gender');
+              });
+
+              if (!hasStep1FieldsInPayload) {
+                console.log(`[PANDIT-STEP-TRACE] Dispatching saarthi-set-step event for activeField: "${activeField}" -> step: ${targetStep}`);
+                window.dispatchEvent(new CustomEvent('saarthi-set-step', { detail: { step: targetStep, activeField } }));
+
+                // Visually highlight active field in DOM
+                setTimeout(() => {
+                  const now = Date.now();
+                  const prevFocused = document.activeElement ? `${document.activeElement.tagName}#${document.activeElement.id}` : 'none';
+                  console.log(`[TRACE-FOCUS-SHIFT] time=${now} activeField="${activeField}" currentlyFocused=${prevFocused}`);
+                  document.querySelectorAll('.saarthi-highlight').forEach(el => el.classList.remove('saarthi-highlight'));
+                  const sel = `[data-testid="upload-${activeField}"], [data-testid="input-${activeField}"], #${activeField}, [data-testid="input-${activeField.replace('pandit-', '')}"]`;
+                  const el = document.querySelector<HTMLElement>(sel);
+                  if (el) {
+                    console.log(`[TRACE-FOCUS-SHIFT] time=${Date.now()} focusing element: tag=${el.tagName} id=${el.id} testId=${el.getAttribute('data-testid')}`);
+                    el.classList.add('saarthi-highlight');
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    if (typeof el.focus === 'function') {
+                      el.focus();
+                    }
+                    console.log(`[TRACE-FOCUS-SHIFT-AFTER] time=${Date.now()} newActiveElement=${document.activeElement?.tagName}#${document.activeElement?.id}`);
+                  } else {
+                    console.log(`[TRACE-FOCUS-SHIFT] time=${Date.now()} no element matched for sel: ${sel}`);
+                  }
+                }, 100);
+              } else {
+                console.log(`[PANDIT-STEP-TRACE] Deferring step change to ${targetStep} because payload contains Step 1 fields to fill first.`);
+              }
+            }
+
+            console.log('[NAV-DEBUG] RAW AI_RESPONSE Received. action=', action, 'target=', JSON.stringify(target));
+
+            if (action === 'NAVIGATE' && target) {
+
+              const cleanTarget = target.trim();
+              const intentName = msg.payload?.intent || '';
+              console.log(`[NAV-DEBUG] Routing for target: ${cleanTarget}, query: ${query}, intent: ${intentName}, currentPath: ${window.location.pathname}`);
+              
+              // 1. Reset voice highlighting/focus state cleanly
+              document.querySelectorAll('.saarthi-highlight').forEach((el) => {
+                el.classList.remove('saarthi-highlight');
+              });
+              document.querySelectorAll('.saarthi-options-list').forEach((el) => {
+                el.remove();
+              });
+              
+              // Also ensure we hide the synthetic cursor immediately
+              const cursor = document.getElementById('saarthi-cursor');
+              if (cursor) cursor.style.opacity = '0';
+              
+              // 🚨 GENERIC AUTO-BOOKING SEQUENCE FOR ALL PUJAS
+              // If navigating to /puja or /services AND (a specific query/service exists OR intent is BOOK_PUJA)
+              if ((cleanTarget.startsWith('/puja') || cleanTarget.startsWith('/services')) && (service || query || intentName === 'BOOK_PUJA')) {
+                 const resolvedService = service || (query && !query.includes(' in ') ? query : null);
+                 const resolvedCity = location || null;
+                 console.log(`[PUJA-AUTOBOOK] Auto-booking sequence triggered for service: ${resolvedService}, city: ${resolvedCity}, query: ${query}`);
+                 
+                 const params = new URLSearchParams();
+                 if (resolvedService) params.set('service', resolvedService);
+                 if (resolvedCity) params.set('city', resolvedCity);
+                 if (query && !resolvedService) params.set('q', query);
+                 const qs = params.toString() ? `?${params.toString()}` : '';
+
+                 const seq: any[] = [];
+                 seq.push({ action: 'navigate', path: `/puja${qs}`, delay: 400 });
+                 seq.push({ action: 'wait_for_selector', target: '[data-testid^="card-puja-"], .service-card', delay: 400 });
+                 seq.push({ action: 'scroll', target: '[data-testid^="card-puja-"], .service-card', delay: 400 });
+                 seq.push({ action: 'move', target: '[data-testid^="button-book-now-"], .service-card button', delay: 800 });
+                 seq.push({ action: 'click', target: '[data-testid^="button-book-now-"], .service-card button', delay: 400 });
+                 runSequence(seq);
+                 return;
+              }
+
+              // 2. Perform soft in-app routing using React Router's useNavigate
+              userHasSpokenRef.current = false;
+              userRecordedBytesRef.current = 0;
+              preRollFramesRef.current = [];
+              if (resetVadStateRef.current) {
+                resetVadStateRef.current();
+              }
+              navigate(cleanTarget);
+
+              // 3. Auto-scroll past repetitive hero banners to reveal distinct page content
+              setTimeout(() => {
+                if (cleanTarget === '/' || cleanTarget === '') {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                  return;
+                }
+
+                const routeAnchorMap: Record<string, string> = {
+                  '/puja': '#puja-catalog-section, [data-testid="section-puja-catalog"]',
+                  '/services': '#puja-catalog-section, [data-testid="section-puja-catalog"]',
+                  '/kundali-creation': '#kundali-form-section, [data-testid="section-kundali-form"]',
+                  '/kundali': '#kundali-form-section, [data-testid="section-kundali-form"]',
+                  '/muhurat-finder': '#muhurat-finder-section, [data-testid="section-muhurat-finder"]',
+                  '/muhurat': '#muhurat-finder-section, [data-testid="section-muhurat-finder"]',
+                  '/signup': '[data-testid="card-signup"]',
+                  '/sign-up': '[data-testid="card-signup"]',
+                  '/login': '[data-testid="card-login"]',
+                  '/dashboard': 'main',
+                };
+
+                const selector = Object.entries(routeAnchorMap).find(([route]) =>
+                  cleanTarget.startsWith(route)
+                )?.[1] || 'main > section:nth-of-type(2), .section';
+
+                const targetEl = document.querySelector(selector) as HTMLElement | null;
+                if (targetEl) {
+                  const headerHeight = 80;
+                  const elementTop = targetEl.getBoundingClientRect().top + window.scrollY;
+                  window.scrollTo({ top: Math.max(0, elementTop - headerHeight), behavior: 'smooth' });
+                } else {
+                  window.scrollTo({ top: 420, behavior: 'smooth' });
+                }
+              }, 400);
+
+              // Allow any cleanup or state resets to happen
+              return;
+            } else if (action === 'START_TOUR') {
+              console.log('[SITE-TOUR] Preparing site tour sequence for target:', target);
+              const seq: any[] = [];
+              if (target === 'pandit_tour') {
+                // PANDIT TOUR: 3 Stops
+                // Stop 1: Home page CTA
+                seq.push({ action: 'navigate', path: '/', delay: 400 });
+                seq.push({ action: 'move', target: '[data-testid="button-become-pandit-cta"], a[href="/sign-up?role=pandit"]', delay: 800 });
+                seq.push({ action: 'scroll', target: '[data-testid="button-become-pandit-cta"], a[href="/sign-up?role=pandit"]', delay: 2000 });
+                // Stop 2: Pandit Registration Form & Tab
+                seq.push({ action: 'navigate', path: '/signup?role=pandit', delay: 400 });
+                seq.push({ action: 'wait_for_selector', target: '[data-testid="tab-usertype-pandit"]', delay: 300 });
+                seq.push({ action: 'click', target: '[data-testid="tab-usertype-pandit"]', delay: 400 });
+                seq.push({ action: 'move', target: '[data-testid="input-pandit-name"]', delay: 2500 });
+                // Stop 3: Document Upload Section
+                seq.push({ action: 'scroll', target: '[data-testid="button-signup-submit"]', delay: 400 });
+                seq.push({ action: 'move', target: '[data-testid="button-signup-submit"]', delay: 2000 });
+              } else {
+                // DEVOTEE TOUR: 4 Stops
+                // Stop 1: Home Hero
+                seq.push({ action: 'navigate', path: '/', delay: 400 });
+                seq.push({ action: 'move', target: '#hero-section, [data-testid="section-hero"]', delay: 800 });
+                seq.push({ action: 'scroll', target: '#hero-section, [data-testid="section-hero"]', delay: 2000 });
+                // Stop 2: Puja Booking Catalog
+                seq.push({ action: 'navigate', path: '/puja', delay: 400 });
+                seq.push({ action: 'wait_for_selector', target: '#puja-catalog-section, [data-testid="section-puja-catalog"]', delay: 300 });
+                seq.push({ action: 'scroll', target: '#puja-catalog-section, [data-testid="section-puja-catalog"]', delay: 400 });
+                seq.push({ action: 'move', target: '[data-testid="input-search-puja"]', delay: 2500 });
+                // Stop 3: Kundali Creation
+                seq.push({ action: 'navigate', path: '/kundali-creation', delay: 400 });
+                seq.push({ action: 'wait_for_selector', target: '#kundali-form-section, [data-testid="section-kundali-form"]', delay: 300 });
+                seq.push({ action: 'scroll', target: '#kundali-form-section, [data-testid="section-kundali-form"]', delay: 400 });
+                seq.push({ action: 'move', target: '#kundali-form-section, [data-testid="section-kundali-form"]', delay: 2500 });
+                // Stop 4: Muhurat Finder
+                seq.push({ action: 'navigate', path: '/muhurat-finder', delay: 400 });
+                seq.push({ action: 'wait_for_selector', target: '#muhurat-finder-section, [data-testid="section-muhurat-finder"]', delay: 300 });
+                seq.push({ action: 'scroll', target: '#muhurat-finder-section, [data-testid="section-muhurat-finder"]', delay: 400 });
+                seq.push({ action: 'move', target: '#muhurat-finder-section, [data-testid="section-muhurat-finder"]', delay: 2000 });
+              }
+              runSequence(seq);
+            } else if (action === 'FILL_FORM' && (msg.payload.fields || (target && query))) {
+              console.log('[FORM-FILL] Raw AI_RESPONSE for FILL_FORM:', msg.payload);
+              console.log('[FORM-FILL] Received fields array:', JSON.stringify(msg.payload.fields));
+              
+              const fieldsToFill = msg.payload.fields || [{ target, query }];
+              console.log('[FORM-FILL] Number of fields to process:', fieldsToFill.length);
+              console.log('[FORM-FILL] Fields to fill:', fieldsToFill);
+
+              const seq: any[] = [];
+
+              for (const field of fieldsToFill) {
+                const fTarget = field.target || '';
+                const fQuery = field.query || '';
+                
+                let isPanditField = fTarget.startsWith('pandit-') || 
+                                    (activeField && activeField.startsWith('pandit-')) || 
+                                    window.location.search.includes('role=pandit') ||
+                                    !!document.querySelector('[data-testid="input-pandit-first-name"], [data-testid="pandit-wizard-step"], [data-testid="pill-group-pandit-gender"]');
+
+                if (window.location.pathname.includes('signup') && (window.location.search.includes('role=pandit') || document.querySelector('[data-testid="input-pandit-first-name"]'))) {
+                   isPanditField = true;
+                }
+
+                let selector = '';
+                if (fTarget === 'pandit-first-name') selector = '[data-testid="input-pandit-first-name"], #pandit-first-name';
+                else if (fTarget === 'pandit-last-name') selector = '[data-testid="input-pandit-last-name"], #pandit-last-name';
+                else if (fTarget.includes('name')) selector = isPanditField ? '[data-testid="input-pandit-first-name"]' : 'input[name="name"], [data-testid="input-name"], #devotee-name';
+                else if (fTarget.includes('phone') || fTarget.includes('mobile')) selector = isPanditField ? '[data-testid="input-pandit-phone"]' : 'input[name="phone"], input[type="tel"], [data-testid="input-phone"], #devotee-phone';
+                else if (fTarget.includes('city') || fTarget.includes('location')) selector = isPanditField ? '[data-testid="input-pandit-city"]' : 'input[name="city"], [data-testid="input-city"], select#booking-city, #booking-city';
+                else if (fTarget.includes('state')) selector = isPanditField ? '[data-testid="input-pandit-state"]' : 'input[name="state"], [data-testid="input-state"]';
+                else if (fTarget.includes('email')) selector = isPanditField ? '[data-testid="input-pandit-email"]' : 'input[name="email"], input[type="email"], [data-testid="input-email"]';
+                else if (fTarget.includes('gender')) selector = '[data-testid="pill-group-pandit-gender"], [data-field="pandit-gender"]';
+                else if (fTarget.includes('availability') || fTarget.includes('mode')) selector = '[data-testid="pill-group-pandit-availability"], [data-field="pandit-availability"]';
+                else if (fTarget === 'pandit-service-areas' || fTarget.includes('service')) selector = '[data-testid="pill-group-pandit-service-areas"], [data-field="pandit-service-areas"]';
+                else if (fTarget.includes('lang')) selector = '[data-testid="pill-group-pandit-languages"], [data-field="pandit-languages"], [data-testid^="toggle-lang-"]';
+                else if (fTarget.includes('exp')) selector = '#pandit-exp, [data-testid="input-pandit-exp"], [data-testid="select-pandit-exp"]';
+                else if (fTarget.includes('spec')) selector = '[data-testid^="toggle-spec-"]';
+                else if (fTarget.includes('bio')) selector = '#pandit-bio, [data-testid="textarea-pandit-bio"]';
+                else if (fTarget.includes('achieve')) selector = '#pandit-achievements, [data-testid^="input-pandit-achievements-"]';
+                else if (fTarget.includes('date')) selector = 'input[name="date"], input[type="date"], [data-testid="input-date"], #booking-date';
+                else if (fTarget === 'pandit-password' || fTarget.includes('password')) selector = '#pandit-password, [data-testid="input-pandit-password"]';
+                else if (fTarget === 'pandit-confirm' || fTarget.includes('confirm')) selector = '#pandit-confirm, [data-testid="input-pandit-confirm"]';
+                else if (fTarget.includes('aadhaar')) selector = '#pandit-aadhaarFile, [data-testid="input-pandit-aadhaarFile"], [data-testid="upload-pandit-aadhaarFile"]';
+                else if (fTarget.includes('cert')) selector = '#pandit-certFile, [data-testid="input-pandit-certFile"], [data-testid="upload-pandit-certFile"]';
+                else if (fTarget.includes('gallery')) selector = '#pandit-galleryFiles, [data-testid="input-pandit-galleryFiles"], [data-testid="upload-pandit-galleryFiles"]';
+                else if (fTarget.includes('conduct') || fTarget.includes('terms')) selector = '#pandit-code-of-conduct, [data-testid="checkbox-pandit-conduct"], #pandit-terms-accepted, [data-testid="checkbox-pandit-terms"]';
+                else selector = `input[name="${fTarget}"], #${fTarget}`;
+                
+                console.log(`[FORM-FILL] Processing field ${fTarget} -> selector: ${selector}`);
+                if (fTarget.includes('bio')) {
+                  const bioElCheck = document.querySelector(selector);
+                  console.log(`[BIO-TRACE] Selector="${selector}" | MatchSuccess=${!!bioElCheck} | ElementTag=${bioElCheck?.tagName} | CurrentValue="${(bioElCheck as HTMLTextAreaElement)?.value || ''}"`);
+                }
+
+                const isPanditAlreadyActive = hasSelectedPanditTabRef.current ||
+                  window.location.search.includes('role=pandit') ||
+                  !!document.querySelector('[data-testid="input-pandit-first-name"], [data-testid="pandit-wizard-step"], [data-testid="pill-group-pandit-gender"]') ||
+                  !!document.querySelector('[data-testid="tab-user-pandit"][style*="rgb(238, 124, 43)"], [data-testid="tab-user-pandit"][style*="#ee7c2b"], [data-testid="tab-usertype-pandit"][aria-pressed="true"]');
+
+                let hasNavigatedToPandit = false;
+                if (isPanditField && !isPanditAlreadyActive) {
+                  hasSelectedPanditTabRef.current = true;
+                  hasNavigatedToPandit = true;
+                  if (window.location.pathname !== '/signup') {
+                     seq.push({ action: 'navigate', path: '/signup?role=pandit', delay: 200 });
+                     seq.push({ action: 'wait_for_selector', target: selector, delay: 150 });
+                  } else {
+                     const tabBtn = document.querySelector('[data-testid="tab-user-pandit"], [data-testid="tab-usertype-pandit"]');
+                     if (tabBtn) {
+                        const tabTarget = tabBtn.getAttribute('data-testid') ? `[data-testid="${tabBtn.getAttribute('data-testid')}"]` : '[data-testid="tab-user-pandit"]';
+                        seq.push({ action: 'click', target: tabTarget, delay: 150 });
+                        seq.push({ action: 'wait_for_selector', target: selector, delay: 150 });
+                     }
+                  }
+                } else if (isPanditField) {
+                  hasSelectedPanditTabRef.current = true;
+                }
+
+                if (isPanditField) {
+                  const step2Fields = ['exp', 'gurukul', 'education', 'spec', 'lang', 'achievements', 'bio'];
+                  const step3Fields = ['certfile', 'aadhaarfile', 'galleryfiles', 'password', 'confirm', 'codeofconduct'];
+                  
+                  let targetStep = 1;
+                  const fTargetLower = fTarget.toLowerCase();
+                  if (step2Fields.some(f => fTargetLower.includes(f))) targetStep = 2;
+                  if (step3Fields.some(f => fTargetLower.includes(f))) targetStep = 3;
+                  
+                  // Auto-advance wizard steps if needed
+                  if (targetStep >= 2) {
+                      seq.push({ action: 'click', target: '[data-testid="button-pandit-next-1"]', delay: 150 });
+                  }
+                  if (targetStep >= 3) {
+                      seq.push({ action: 'click', target: '[data-testid="button-pandit-next-2"]', delay: 150 });
+                  }
+                  
+                  // Add a small delay to allow DOM to render new step
+                  if (targetStep > 1) {
+                      seq.push({ action: 'wait_for_selector', target: selector, delay: 150 });
+                  }
+
+                  const isSpecToggle = fTarget.includes('spec');
+                  const isLangToggle = fTarget.includes('lang');
+                  const isServiceAreaToggle = fTarget === 'pandit-service-areas' || fTarget.includes('service');
+                  const isButtonGroup = (fTarget.includes('gender') || fTarget.includes('availability') || fTarget.includes('mode')) && !isServiceAreaToggle;
+
+                  if (isServiceAreaToggle) {
+                    const queryStr = Array.isArray(fQuery) ? fQuery.join(', ') : (fQuery || '');
+                    const queryLower = queryStr.toLowerCase();
+                    const serviceCatalog = [
+                      'Delhi NCR', 'Mumbai', 'Bangalore', 'Chennai', 'Kolkata', 'Hyderabad',
+                      'Pune', 'Ahmedabad', 'Jaipur', 'Lucknow', 'Online Puja', 'PAN India',
+                      'North Zone', 'South Zone', 'East Zone', 'West Zone', 'Other'
+                    ];
+
+                    const queryParts = queryLower.split(/,| aur | and | & | \+ /i).map((p: string) => p.trim()).filter(Boolean);
+
+                    for (const area of serviceCatalog) {
+                      const areaLower = area.toLowerCase();
+                      const areaSlug = areaLower.replace(/\s+/g, '-');
+                      const btnSelector = `[data-testid="pill-pandit-service-areas-${areaSlug}"]`;
+
+                      const isSpoken = queryParts.some((p: string) => p === areaLower || p.includes(areaLower) || areaLower.includes(p)) || queryLower.includes(areaLower);
+
+                      let btnEl = document.querySelector<HTMLElement>(btnSelector);
+                      if (!btnEl) {
+                        const container = document.querySelector('[data-testid="pill-group-pandit-service-areas"]');
+                        if (container) {
+                          const btns = Array.from(container.querySelectorAll<HTMLElement>('button'));
+                          btnEl = btns.find(b => (b.textContent || '').toLowerCase().includes(areaLower)) || null;
+                        }
+                      }
+
+                      const isActive = btnEl ? (btnEl.textContent || '').includes('✓') : false;
+
+                      if (isSpoken && !isActive) {
+                        const effectiveSelector = btnEl && btnEl.getAttribute('data-testid')
+                          ? `[data-testid="${btnEl.getAttribute('data-testid')}"]`
+                          : btnSelector;
+                        console.log(`[SAARTHI-VOICE] Toggling Service Area pill: ${area} (selector: ${effectiveSelector})`);
+                        seq.push({ action: 'move', target: effectiveSelector, delay: 450 });
+                        seq.push({ action: 'click', target: effectiveSelector, delay: 250 });
+                      }
+                    }
+
+                    const unhandledParts = queryParts.filter((p: string) => !serviceCatalog.some((a: string) => a.toLowerCase() === p || a.toLowerCase().includes(p) || p.includes(a.toLowerCase())));
+                    if (unhandledParts.length > 0) {
+                      const textSelector = '#pandit-service-areas';
+                      seq.push({ action: 'move', target: textSelector, delay: 450 });
+                      seq.push({ action: 'type', target: textSelector, text: unhandledParts.join(', '), delay: 350 });
+                    }
+                  } else if (isButtonGroup) {
+                    const btnGroupSel = `[data-field="${fTarget}"] button, [data-testid="pill-group-${fTarget}"] button, [data-testid^="pill-${fTarget}"]`;
+                    const queryStr = Array.isArray(fQuery) ? fQuery.join(' ') : (fQuery || '');
+                    const queryLower = queryStr.toLowerCase();
+                    const buttons = Array.from(document.querySelectorAll<HTMLElement>(btnGroupSel));
+                    const matchedBtn = buttons.find(b => (b.textContent || '').toLowerCase().includes(queryLower));
+                    
+                    if (matchedBtn) {
+                      const btnIndex = buttons.indexOf(matchedBtn);
+                      const targetBtnSel = `[data-field="${fTarget}"] button:nth-of-type(${btnIndex + 1}), [data-testid="pill-group-${fTarget}"] button:nth-of-type(${btnIndex + 1})`;
+                      seq.push({ action: 'move', target: targetBtnSel, delay: 450 });
+                      seq.push({ action: 'click', target: targetBtnSel, delay: 250 });
+                    } else {
+                      const fallbackSel = `[data-testid="pill-${fTarget}-${queryLower}"]`;
+                      seq.push({ action: 'move', target: fallbackSel, delay: 450 });
+                      seq.push({ action: 'click', target: fallbackSel, delay: 250 });
+                    }
+                  } else if (isSpecToggle) {
+                    const queryStr = Array.isArray(fQuery) ? fQuery.join(', ') : (fQuery || '');
+                    const queryLower = queryStr.toLowerCase();
+                    const specializationsCatalog = [
+                      'वैदिक अनुष्ठान (Vedic Rituals)',
+                      'ज्योतिष (Astrology)',
+                      'विवाह संस्कार (Marriage Ceremonies)',
+                      'गृह प्रवेश (House Warming)',
+                      'नामकरण (Naming Ceremony)',
+                      'अन्नप्राशन (First Feeding)',
+                      'मुंडन (Hair Cutting)',
+                      'यज्ञ (Yajna)',
+                      'पूजा (Puja)',
+                      'हवन (Havan)',
+                      'संस्कार (Sanskar)',
+                      'व्रत (Vrat)',
+                      'Rudrabhishek & Mahamrityunjaya',
+                      'Navgraha Shanti & Dosha Nivaran',
+                      'Satyanarayan Katha & Path',
+                      'Shodasha Sanskar Ceremonies',
+                      'अन्य (Other)'
+                    ];
+
+                    const queryParts = queryLower.split(/,| aur | and | & | \+ /i).map((p: string) => p.trim()).filter(Boolean);
+
+                    for (const spec of specializationsCatalog) {
+                      const specLower = spec.toLowerCase();
+                      const specSlug = specLower.replaceAll(' ', '-');
+                      const btnSelector = `[data-testid="toggle-spec-${specSlug}"]`;
+
+                      const englishPart = specLower.includes('(') ? specLower.split('(')[1].replace(')', '').trim() : '';
+                      const hindiPart = specLower.includes('(') ? specLower.split('(')[0].trim() : '';
+
+                      const isSpoken = queryParts.some((p: string) =>
+                        p === specLower || p.includes(specLower) || specLower.includes(p) ||
+                        (englishPart && (p.includes(englishPart) || englishPart.includes(p))) ||
+                        (hindiPart && (p.includes(hindiPart) || hindiPart.includes(p)))
+                      ) || queryLower.includes(specLower) || (englishPart && queryLower.includes(englishPart)) || (hindiPart && queryLower.includes(hindiPart));
+
+                      let btnEl = document.querySelector<HTMLElement>(btnSelector);
+                      if (!btnEl) {
+                        const allSpecBtns = Array.from(document.querySelectorAll<HTMLElement>('[data-testid^="toggle-spec-"]'));
+                        btnEl = allSpecBtns.find(b => {
+                          const txt = (b.textContent || '').toLowerCase();
+                          return txt.includes(specLower) || (englishPart && txt.includes(englishPart)) || (hindiPart && txt.includes(hindiPart));
+                        }) || null;
+                      }
+
+                      const isActive = btnEl ? (btnEl.textContent || '').includes('✓') : false;
+
+                      if (isSpoken && !isActive) {
+                        const effectiveSelector = btnEl && btnEl.getAttribute('data-testid')
+                          ? `[data-testid="${btnEl.getAttribute('data-testid')}"]`
+                          : btnSelector;
+                        console.log(`[SAARTHI-VOICE] Toggling Specialization pill: ${spec} (selector: ${effectiveSelector})`);
+                        seq.push({ action: 'move', target: effectiveSelector, delay: 450 });
+                        seq.push({ action: 'click', target: effectiveSelector, delay: 250 });
+                      }
+                    }
+                  } else if (isLangToggle) {
+                    const queryStr = Array.isArray(fQuery) ? fQuery.join(', ') : (fQuery || '');
+                    const queryLower = queryStr.toLowerCase();
+                    const languagesList = [
+                      'Hindi', 'Sanskrit', 'English', 'Tamil', 'Telugu', 'Bengali',
+                      'Gujarati', 'Marathi', 'Kannada', 'Malayalam', 'Punjabi', 'Assamese', 'Odia'
+                    ];
+
+                    const queryParts = queryLower.split(/,| aur | and | & | \+ /i).map((p: string) => p.trim()).filter(Boolean);
+
+                    // Ensure Step 2 language toggle container is rendered in sequence
+                    seq.push({ action: 'wait_for_selector', target: '[data-testid="toggle-lang-hindi"]', delay: 200 });
+
+                    for (const lang of languagesList) {
+                      const langLower = lang.toLowerCase();
+                      const btnSelector = `[data-testid="toggle-lang-${langLower}"]`;
+                      const isSpoken = queryParts.some((p: string) => p === langLower || p.includes(langLower) || langLower.includes(p)) ||
+                                       queryLower.includes(langLower) ||
+                                       (langLower === 'english' && (queryLower.includes('angrezi') || queryLower.includes('english')));
+
+                      let btnEl = document.querySelector<HTMLElement>(btnSelector);
+                      const isActive = btnEl ? (btnEl.textContent || '').includes('✓') : false;
+
+                      if (isSpoken && !isActive) {
+                        console.log(`[SAARTHI-VOICE] Toggling Language pill: ${lang} (selector: ${btnSelector})`);
+                        seq.push({ action: 'move', target: btnSelector, delay: 450 });
+                        seq.push({ action: 'click', target: btnSelector, delay: 250 });
+                      }
+                    }
+                  } else if (fTarget.includes('achieve')) {
+                    const queryStr = Array.isArray(fQuery) ? fQuery.join(', ') : (fQuery || '');
+                    const achParts = queryStr.split(/,| aur | and | & | \+ /i).map((p: string) => p.trim()).filter(Boolean);
+                    achParts.forEach((part: string, idx: number) => {
+                      const achSelector = idx === 0 ? '#pandit-achievements, [data-testid="input-pandit-achievements-0"]' : `#pandit-achievements-${idx}, [data-testid="input-pandit-achievements-${idx}"]`;
+                      if (idx > 0) {
+                        seq.push({ action: 'move', target: '[data-testid="button-add-achievement"]', delay: 450 });
+                        seq.push({ action: 'click', target: '[data-testid="button-add-achievement"]', delay: 250 });
+                        seq.push({ action: 'wait_for_selector', target: achSelector, delay: 150 });
+                      }
+                      seq.push({ action: 'move', target: achSelector, delay: 450 });
+                      seq.push({ action: 'type', target: achSelector, text: part, delay: 350 });
+                    });
+                  } else if (fTarget.includes('conduct') || fTarget.includes('terms')) {
+                    seq.push({ action: 'move', target: selector, delay: 450 });
+                    seq.push({ action: 'click', target: selector, delay: 250 });
+                  } else {
+                    seq.push({ action: 'move', target: selector, delay: 450 });
+                    seq.push({ action: 'type', target: selector, text: fQuery, delay: 350 });
+                  }
+                } else {
+                  const element = document.querySelector(selector);
+                  console.log(`[FORM-FILL] Attempting to queue fill: field="${fTarget}", value="${fQuery}", selector="${selector}", foundElement=${!!element}`);
+                  if (element || hasNavigatedToPandit) {
+                    if (fTarget.includes('conduct') || fTarget.includes('terms')) {
+                      seq.push({ action: 'move', target: selector, delay: 600 });
+                      seq.push({ action: 'click', target: selector, delay: 300 });
+                    } else {
+                      seq.push({ action: 'move', target: selector, delay: 800 });
+                      seq.push({ action: 'type', target: selector, text: fQuery, delay: 800 });
+                    }
+                  } else {
+                    console.warn(`[FORM-FILL] Could not find element for target: ${fTarget}`);
+                  }
+                }
+              }
+
+              const isPanditActive = activeField?.startsWith('pandit-') || window.location.pathname.includes('signup');
+              if (activeField && isPanditActive) {
+                const step2Fields = ['exp', 'gurukul', 'education', 'spec', 'lang', 'achievements', 'bio'];
+                const step3Fields = ['certfile', 'aadhaarfile', 'galleryfiles', 'password', 'confirm', 'codeofconduct', 'conduct', 'terms'];
+                let targetStep: 1 | 2 | 3 = 1;
+                const fLower = activeField.toLowerCase();
+                if (step2Fields.some(f => fLower.includes(f))) targetStep = 2;
+                if (step3Fields.some(f => fLower.includes(f))) targetStep = 3;
+
+                if (targetStep >= 2) {
+                  seq.push({ action: 'click', target: '[data-testid="button-pandit-next-1"]', delay: 150 });
+                }
+                if (targetStep >= 3) {
+                  seq.push({ action: 'click', target: '[data-testid="button-pandit-next-2"]', delay: 150 });
+                }
+              }
+
+              if (seq.length > 0) {
+                sequenceQueueRef.current = seq;
+                if (!isExecutingSequenceRef.current) {
+                  processNextStepRef.current();
+                }
+              }
+            } else if (action === 'SUBMIT_FORM') {
+              console.log('[FORM-SUBMIT] SUBMIT_FORM action received. Target button:', target);
+
+              // BUG-11.2 FIX: Expanded detection — check URL, wizard-step element, or any pandit-prefixed testid
+              const isPanditForm = window.location.pathname.includes('/signup') ||
+                !!document.querySelector('#pandit-onboarding-form, [data-testid="card-signup"], [data-testid="pandit-wizard-step"], [data-testid^="input-pandit-"]');
+              console.log('[FORM-SUBMIT] isPanditForm:', isPanditForm, '| URL:', window.location.pathname);
+              if (isPanditForm) {
+                const stepEl = document.querySelector('[data-testid="pandit-wizard-step"]');
+                const currentStep = stepEl ? (stepEl.getAttribute('data-step') || '1') : '1';
+                console.log(`[FORM-SUBMIT] Current wizard step: ${currentStep}`);
+
+                if (currentStep === '1') {
+                  const next1Btn = '[data-testid="button-pandit-next-1"]';
+                  const seq: any[] = [
+                    { action: 'wait_for_selector', target: next1Btn, delay: 300 },
+                    { action: 'scroll', target: next1Btn, delay: 400 },
+                    { action: 'move', target: next1Btn, delay: 800 },
+                    { action: 'click', target: next1Btn, delay: 200 },
+                  ];
+                  sequenceQueueRef.current = seq;
+                  if (!isExecutingSequenceRef.current) {
+                    processNextStepRef.current();
+                  }
+                  return;
+                } else if (currentStep === '2') {
+                  const next2Btn = '[data-testid="button-pandit-next-2"]';
+                  const seq: any[] = [
+                    { action: 'wait_for_selector', target: next2Btn, delay: 300 },
+                    { action: 'scroll', target: next2Btn, delay: 400 },
+                    { action: 'move', target: next2Btn, delay: 800 },
+                    { action: 'click', target: next2Btn, delay: 200 },
+                  ];
+                  sequenceQueueRef.current = seq;
+                  if (!isExecutingSequenceRef.current) {
+                    processNextStepRef.current();
+                  }
+                  return;
+                } else if (currentStep === '3') {
+                  // Perform Step 3 Checks
+                  const pwdEl = document.querySelector<HTMLInputElement>('#pandit-password, [data-testid="input-pandit-password"]');
+                  const cpwdEl = document.querySelector<HTMLInputElement>('#pandit-confirm, [data-testid="input-pandit-confirm"]');
+                  const termsEl = document.querySelector<HTMLInputElement>('#pandit-code-of-conduct, [data-testid="checkbox-pandit-conduct"], #pandit-terms-accepted, [data-testid="checkbox-pandit-terms"], input[type="checkbox"]');
+                  const aadhaarInput = document.querySelector<HTMLInputElement>('#pandit-aadhaarFile, [data-testid="input-pandit-aadhaarFile"]');
+                  const windowAadhaar = (window as any)._panditAadhaarFile;
+                  const hasAadhaar = Boolean((aadhaarInput?.files && aadhaarInput.files.length > 0) || windowAadhaar);
+
+                  const pwdVal = pwdEl?.value?.trim() || '';
+                  const cpwdVal = cpwdEl?.value?.trim() || '';
+                  const hasPwd = pwdVal.length >= 8;
+                  const pwdMatches = pwdVal === cpwdVal;
+
+                  if (!hasAadhaar) {
+                    announceMessage("Panditji, kripya pehle apna Aadhaar card ya ID proof upload kijiye.", false);
+                    return;
+                  }
+
+                  if (!hasPwd) {
+                    announceMessage("Panditji, aapne abhi tak Password set nahi kiya hai. Kripya screen par Password set karke dobara 'maine kar diya' boliye.", false);
+                    return;
+                  } else if (!pwdMatches) {
+                    if (cpwdEl) {
+                      cpwdEl.value = '';
+                      cpwdEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                    announceMessage("Panditji, aapne password galat daala hai, dono password match nahi ho rahe. Kripya dobara try karein.", false);
+                    return;
+                  }
+
+                  if (termsEl && !termsEl.checked) {
+                    announceMessage("Kripya checkbox par click karke terms accept karein.", false);
+                    return;
+                  }
+
+                  const submitSelector = '[data-testid="button-submit-pandit-signup"], [data-testid="button-submit-signup"], form button[type="submit"], button[type="submit"]';
+                  const seq: any[] = [
+                    { action: 'wait_for_selector', target: submitSelector, delay: 300 },
+                    { action: 'scroll', target: submitSelector, delay: 400 },
+                    { action: 'move', target: submitSelector, delay: 800 },
+                    { action: 'click', target: submitSelector, delay: 200 },
+                  ];
+                  sequenceQueueRef.current = seq;
+                  if (!isExecutingSequenceRef.current) {
+                    processNextStepRef.current();
+                  }
+                }
+              } else {
+                const submitSelector = '[data-testid="button-submit-pandit-signup"], [data-testid="button-submit-signup"], form button[type="submit"], button[type="submit"]';
+                const seq: any[] = [
+                  { action: 'wait_for_selector', target: submitSelector, delay: 300 },
+                  { action: 'scroll', target: submitSelector, delay: 400 },
+                  { action: 'move', target: submitSelector, delay: 800 },
+                  { action: 'click', target: submitSelector, delay: 200 },
+                ];
+                sequenceQueueRef.current = seq;
+                if (!isExecutingSequenceRef.current) {
+                  processNextStepRef.current();
+                }
+              }
+            }
+            
+            // 🚨 REAL-TIME WORD-BY-WORD PROGRESSIVE STREAMING FOR ASSISTANT RESPONSE
+            if (streamIntervalRef.current) clearInterval(streamIntervalRef.current as any);
+
+            // ── STT low-confidence cue: flag when the backend could not understand ──
+            const recognitionStatus = msg.payload.recognition_status
+              || (msg.payload.navigation_directive && msg.payload.navigation_directive.recognition_status)
+              || null;
+            const isRepeatPrompt = intent === 'REPEAT_PROMPT'
+              || recognitionStatus === 'no_speech'
+              || recognitionStatus === 'stt_error';
+            setNeedsRepeat(isRepeatPrompt);
+
+            const fullText = contentStr;
+            const words = fullText.split(' ');
+            if (words.length > 1) {
+               let wordIdx = 0;
+               setDialogueText(words[0]);
+               streamIntervalRef.current = setInterval(() => {
+                  wordIdx++;
+                  if (wordIdx < words.length) {
+                     setDialogueText(words.slice(0, wordIdx + 1).join(' '));
+                  } else {
+                     if (streamIntervalRef.current) {
+                        clearInterval(streamIntervalRef.current as any);
+                        streamIntervalRef.current = null;
+                     }
+                  }
+               }, 110);
+            } else {
+               setDialogueText(fullText);
+            }
+
+            if (!isGreetingResponse) {
+              console.log('[STATE]', 'idle -> speaking');
+              stateRef.current = 'speaking';
+              setSaarthiState('speaking');
+            }
+            isFinalChunkReceived.current = false;
+            
+            // Fallback: if no audio arrives or queue gets stuck, go back to listening after 20 seconds
+            if (fallbackTimeoutRef.current) clearTimeout(fallbackTimeoutRef.current);
+            const reqIdToAbandon = currentRequestIdRef.current;
+            fallbackTimeoutRef.current = setTimeout(() => {
+               if (audioQueueRef.current.length === 0 && !isPlayingRef.current) {
+                  console.log('[STATE]', 'fallback timeout fired after 20s');
+                  console.log('[STATE]', `speaking -> listening (abandoning late response for ${reqIdToAbandon})`);
+                  abandonedRequestsRef.current.add(reqIdToAbandon);
+                  isFinalChunkReceived.current = false;
+                  preRollFramesRef.current = [];
+                  userHasSpokenRef.current = false;
+                  userRecordedBytesRef.current = 0;
+                  if (resetVadStateRef.current) resetVadStateRef.current();
+                  stateRef.current = 'listening';
+                  setSaarthiState('listening');
+               }
+            }, 20000);
+            
+            return;
+          }
+
+          // ----------- AUDIO_CHUNK handling -----------------------------------
+          if (msg.type === 'AUDIO_CHUNK') {
+            if (ttsCooldownTimerRef.current) {
+              clearTimeout(ttsCooldownTimerRef.current);
+              ttsCooldownTimerRef.current = null;
+            }
+            if (!isVoiceEnabledRef.current) {
+              console.log('[Voice] Discarding AUDIO_CHUNK because voice is disabled');
+              audioQueueRef.current = [];
+              return;
+            }
+            const isFinal = msg.payload.is_final || false;
+            console.log('[STATE]', 'AUDIO_CHUNK is_final:', isFinal);
+            
+            if (isFinal) {
+                isFinalChunkReceived.current = true;
+            }
+            if (!audioContextRef.current) {
+              try {
+                audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+              } catch (e) {
+                audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+              }
+              (window as any)._saarthiAudioContext = audioContextRef.current;
+              console.log(`[Voice-PCM] Initialized AudioContext. sampleRate: ${audioContextRef.current.sampleRate}Hz`);
+            }
+            if (audioContextRef.current.state === 'suspended') {
+              console.log(`[Voice] AudioContext is suspended. Attempting resume()...`);
+              try {
+                await audioContextRef.current.resume();
+                console.log(`[Voice] AudioContext resume() succeeded. State is now: ${audioContextRef.current.state}`);
+              } catch (e) {
+                console.warn('[Voice] Could not resume AudioContext (autoplay blocked):', e);
+                console.log(`[Voice] AudioContext state after failed resume: ${audioContextRef.current.state}`);
+                
+                // Add global listener to resume on next interaction
+                if (!(window as any)._audioPlayClickListenerAdded) {
+                  (window as any)._audioPlayClickListenerAdded = true;
+                  console.log('[Voice] Added global user interaction listener to resume audio.');
+                  const resumeAudio = async () => {
+                    console.log('[Voice] User interaction detected, attempting to resume AudioContext...');
+                    if (audioContextRef.current?.state === 'suspended') {
+                      try {
+                        await audioContextRef.current.resume();
+                        console.log('[Voice] AudioContext resumed successfully via user interaction.');
+                      } catch (err) {
+                        console.error('[Voice] Failed to resume on user interaction:', err);
+                      }
+                    }
+                    window.removeEventListener('click', resumeAudio);
+                    window.removeEventListener('keydown', resumeAudio);
+                    window.removeEventListener('touchstart', resumeAudio);
+                    (window as any)._audioPlayClickListenerAdded = false;
+                  };
+                  window.addEventListener('click', resumeAudio);
+                  window.addEventListener('keydown', resumeAudio);
+                  window.addEventListener('touchstart', resumeAudio);
+                }
+              }
+            }
+            const chunkSampleRate = Number(msg.payload.sample_rate) || 24000;
+            const chunkEncoding = (msg.payload.encoding || 'LINEAR16').toUpperCase();
+
+            // 3. SAMPLE RATE VERIFICATION
+            if (audioContextRef.current) {
+              console.log(`[Voice-PCM] Sample rate verify: backendChunk=${chunkSampleRate}Hz, audioContext=${audioContextRef.current.sampleRate}Hz`);
+            }
+
+            const audioData = msg.payload.data || msg.payload.audio_b64;
+            if (audioData) {
+              const binaryString = atob(audioData);
+              const byteLen = binaryString.length;
+
+              if (chunkEncoding === 'MP3') {
+                // Fallback for any legacy cached MP3 prompts: buffer-till-final to prevent repeats
+                const bytes = new Uint8Array(byteLen);
+                for (let i = 0; i < byteLen; i++) bytes[i] = binaryString.charCodeAt(i);
+                audioBytesAccumulatorRef.current.push(bytes);
+                if (isFinal) {
+                  const totalLength = audioBytesAccumulatorRef.current.reduce((acc, curr) => acc + curr.length, 0);
+                  const mergedBytes = new Uint8Array(totalLength);
+                  let offset = 0;
+                  for (const chunk of audioBytesAccumulatorRef.current) {
+                    mergedBytes.set(chunk, offset);
+                    offset += chunk.length;
+                  }
+                  audioBytesAccumulatorRef.current = [];
+                  try {
+                    const decoded = await audioContextRef.current.decodeAudioData(mergedBytes.buffer.slice(0));
+                    audioQueueRef.current.push(decoded);
+                    playNextAudioRef.current?.();
+                  } catch (e) {
+                    console.warn('[Voice] MP3 fallback decode error on final chunk:', e);
+                    playNextAudioRef.current?.();
+                  }
+                }
+              } else {
+                // 2. BYTE ALIGNMENT & WAV HEADER STRIPPING
+                const rawBytes = new Uint8Array(byteLen);
+                for (let i = 0; i < byteLen; i++) rawBytes[i] = binaryString.charCodeAt(i);
+
+                // Strip any embedded WAV (RIFF...WAVEfmt...data) container headers
+                const strippedBytes = stripWavHeaders(rawBytes);
+
+                let combinedBytes: Uint8Array;
+                if (pcmByteLeftoverRef.current && pcmByteLeftoverRef.current.length > 0) {
+                  const leftover = pcmByteLeftoverRef.current;
+                  combinedBytes = new Uint8Array(leftover.length + strippedBytes.length);
+                  combinedBytes.set(leftover, 0);
+                  combinedBytes.set(strippedBytes, leftover.length);
+                  pcmByteLeftoverRef.current = null;
+                } else {
+                  combinedBytes = strippedBytes;
+                }
+
+                // If odd byte count, hold the trailing byte to maintain strict 16-bit (2-byte) sample alignment
+                let alignedBytes: Uint8Array;
+                if (combinedBytes.length % 2 !== 0) {
+                  pcmByteLeftoverRef.current = combinedBytes.slice(combinedBytes.length - 1);
+                  alignedBytes = combinedBytes.slice(0, combinedBytes.length - 1);
+                  console.log(`[Voice-PCM] Odd byte count (${combinedBytes.length}). Carrying forward 1 trailing byte.`);
+                } else {
+                  alignedBytes = combinedBytes;
+                }
+
+                // 4. SMALL CHUNK SIZE CHECK & CLIENT-SIDE BUFFERING
+                const chunkDurMs = (alignedBytes.length / (chunkSampleRate * 2)) * 1000;
+                console.log(`[Voice-PCM] Ingest chunk: size=${alignedBytes.length} bytes, dur=${chunkDurMs.toFixed(1)}ms, isFinal=${isFinal}`);
+
+                if (alignedBytes.length > 0) {
+                  pcmChunkBufferRef.current.push(alignedBytes);
+                }
+
+                // Accumulate to at least 2400 bytes (~50ms @ 24kHz) to avoid scheduling overhead and buffer underruns, or flush immediately if isFinal
+                const MIN_BATCH_BYTES = 2400;
+                const totalBuffered = pcmChunkBufferRef.current.reduce((acc, b) => acc + b.length, 0);
+
+                if (totalBuffered >= MIN_BATCH_BYTES || (isFinal && totalBuffered > 0)) {
+                  const merged = new Uint8Array(totalBuffered);
+                  let offset = 0;
+                  for (const b of pcmChunkBufferRef.current) {
+                    merged.set(b, offset);
+                    offset += b.length;
+                  }
+                  pcmChunkBufferRef.current = [];
+
+                  const numSamples = merged.length / 2;
+                  if (numSamples > 0 && audioContextRef.current) {
+                    const int16 = new Int16Array(merged.buffer, merged.byteOffset, numSamples);
+                    const float32 = new Float32Array(numSamples);
+                    for (let i = 0; i < numSamples; i++) {
+                      float32[i] = int16[i] / 32768.0;
+                    }
+
+                    const audioBuffer = audioContextRef.current.createBuffer(1, numSamples, chunkSampleRate);
+                    audioBuffer.copyToChannel(float32, 0);
+
+                    audioQueueRef.current.push(audioBuffer);
+                    playNextAudioRef.current?.();
+                  }
+                } else if (isFinal) {
+                  playNextAudioRef.current?.();
+                }
+              }
+            } else {
+              console.warn('[Voice] AUDIO_CHUNK missing audio payload');
+              // BUG-11.1 FIX: If this was the final chunk with empty data (TTS error/empty audio),
+              // still call playNextAudio so the empty-queue path fires and state transitions to 'listening'
+              if (isFinal && isFinalChunkReceived.current) {
+                console.warn('[FREEZE-RECOVERY] Final AUDIO_CHUNK had no data — calling playNextAudio to prevent speaking-state freeze');
+                audioBytesAccumulatorRef.current = [];
+                pcmChunkBufferRef.current = [];
+                pcmByteLeftoverRef.current = null;
+                playNextAudioRef.current?.();
+              }
+            }
+            return;
+          }
+        } catch (err) {
+          console.error('[Voice] WebSocket message parsing error', err);
+        }
+      };
+
+    ws.onclose = (event: CloseEvent) => {
+      console.log(`[Voice] WebSocket Closed (code: ${event.code}, reason: ${event.reason}, clean: ${event.wasClean})`);
+      setIsConnected(false);
+      updateSessionReady(false);
+
+      // BUG-11.1 FIX: If WS closes while stuck in 'thinking', recover state immediately
+      if (thinkingWatchdogRef.current) {
+        clearTimeout(thinkingWatchdogRef.current);
+        thinkingWatchdogRef.current = null;
+      }
+
+      const reasonLower = (event.reason || '').toLowerCase();
+      const isRateLimit =
+        isRateLimitedRef.current ||
+        (event.code === 1008 && (reasonLower.includes('rate limit') || reasonLower.includes('403') || reasonLower.includes('attempt') || event.reason.includes('Bahut zyada') || reasonLower.includes('session'))) ||
+        reasonLower.includes('rate limit') ||
+        reasonLower.includes('403') ||
+        event.reason.includes('Bahut zyada attempts');
+
+      if (isRateLimit) {
+        console.warn('[Voice] WebSocket closed due to rate limiting. Reason:', event.reason);
+        isConnectingRef.current = false;
+        isRateLimitedRef.current = false;
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = null;
+        }
+        const displayMsg = 'Bahut zyada attempts ho gaye hain, kripya thodi der baad try karein';
+        if (!hasAnnouncedRateLimitRef.current) {
+          hasAnnouncedRateLimitRef.current = true;
+          announceMessage(displayMsg, false);
+          setError(displayMsg);
+        }
+        return;
+      }
+
+      if (stateRef.current === 'thinking') {
+        console.warn('[FREEZE-RECOVERY] WS closed while in thinking state. Resetting to listening.');
+        stateRef.current = 'listening';
+        setSaarthiState('listening');
+      }
+
+      const isClean = event.code === 1000 || event.code === 1001;
+
+      // ── Handle Ticket Expiry / Rejection (Code 1008) with immediate fresh ticket retry ──
+      if (event.code === 1008) {
+        console.warn('[Voice] WebSocket closed with code 1008 (Ticket expired/rejected).');
+        isConnectingRef.current = false;
+        if (ticketRetryCount < 1) {
+          console.log('[Voice] Retrying WebSocket connection with a fresh ephemeral ticket (attempt 1)...');
+          setTimeout(() => {
+            connectWebSocket(ticketRetryCount + 1);
+          }, 500);
+          return;
+        } else {
+          setError('Voice session authenticate nahi ho payi. Kripya page refresh karein.');
+          return;
+        }
+      }
+
+      if (!isClean && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttemptsRef.current += 1;
+        const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttemptsRef.current - 1));
+        console.log(`[Voice] WebSocket auto-reconnect attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS} in ${delay} ms`);
+        
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current);
+        }
+        reconnectTimerRef.current = setTimeout(() => {
+          if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+            console.log(`[Voice] Executing auto-reconnect attempt ${reconnectAttemptsRef.current}...`);
+            connectWebSocket();
+          }
+        }, delay);
+      }
+    };
+
+    ws.onerror = (e) => {
+      console.error('[Voice] WebSocket Error', e);
+      isConnectingRef.current = false;
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
+      // BUG-11.1 FIX: Clear watchdog and recover from 'thinking' freeze on WS error
+      if (thinkingWatchdogRef.current) {
+        clearTimeout(thinkingWatchdogRef.current);
+        thinkingWatchdogRef.current = null;
+      }
+      if (stateRef.current === 'thinking') {
+        console.warn('[FREEZE-RECOVERY] WS error while in thinking state. Resetting to listening.');
+        stateRef.current = 'listening';
+        setSaarthiState('listening');
+      }
+      setError('WebSocket error');
+      updateSessionReady(false);
+    };
+
+    wsRef.current = ws;
+  }, [updateSessionReady, sendWsMessage, setDialogueText, setSaarthiState, forceMinimize, announceMessage, setNeedsRepeat, stopAudioPlayback, runSequence, navigate]);
+
+  const connectWebSocketRef = useRef(connectWebSocket);
+  useEffect(() => {
+    connectWebSocketRef.current = connectWebSocket;
+  }, [connectWebSocket]);
+
+  useEffect(() => {
+    console.log('[Voice] Mounting: Initializing WebSocket connection...');
+    connectWebSocketRef.current();
+
+    return () => {
+      console.log('[Voice] Unmounting: Cleaning up WebSocket...');
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+      }
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+      }
+      if (wsRef.current) {
+        console.log('[Voice] Silencing event handlers and closing socket during unmount.');
+        wsRef.current.onclose = null;
+        wsRef.current.onerror = null;
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      isConnectingRef.current = false;
+    };
+  }, []);
+
+  const playNextAudio = useCallback(() => {
+    if (!isVoiceEnabledRef.current) {
+      console.log('[Voice] Discarding playNextAudio because voice is disabled');
+      audioQueueRef.current = [];
+      pcmChunkBufferRef.current = [];
+      pcmByteLeftoverRef.current = null;
+      isPlayingRef.current = false;
+      return;
+    }
+
+    const audioCtx = audioContextRef.current;
+    if (!audioCtx) {
+      return;
+    }
+
+    // If queue is empty and no active sources are playing, check if speech is done
+    if (audioQueueRef.current.length === 0 && activeSourcesRef.current.size === 0) {
+      if (isFinalChunkReceived.current && !isPlayingRef.current) {
+        if (!isVoiceEnabledRef.current) {
+          console.log('[Voice] Suppressing state transition because voice is disabled');
+          stateRef.current = 'idle';
+          setSaarthiState('idle');
+          return;
+        }
+
+        // Immediate buffer purge: drop any speaker audio captured by the microphone during playback
+        preRollFramesRef.current = [];
+        userRecordedBytesRef.current = 0;
+        userHasSpokenRef.current = false;
+
+        console.log(`[VERIFY-DIAGNOSTIC] (a) Audio playback complete (verification readout finished). Starting ${ACOUSTIC_COOLDOWN_MS}ms acoustic cooldown.`);
+
+        if (ttsCooldownTimerRef.current) {
+          clearTimeout(ttsCooldownTimerRef.current);
+        }
+
+        ttsCooldownTimerRef.current = setTimeout(() => {
+          ttsCooldownTimerRef.current = null;
+          if (!isVoiceEnabledRef.current) return;
+
+          console.log(`[VERIFY-DIAGNOSTIC] (b) Acoustic cooldown elapsed (${ACOUSTIC_COOLDOWN_MS}ms). Mic re-armed. Transitioning state: speaking -> listening.`);
+          isFinalChunkReceived.current = false;
+          userHasSpokenRef.current = false;
+          userRecordedBytesRef.current = 0;
+          nextStartTimeRef.current = 0;
+          pcmChunkBufferRef.current = [];
+          pcmByteLeftoverRef.current = null;
+          preRollFramesRef.current = [];
+          echoTailActiveRef.current = true;
+          echoTailDeadlineRef.current = Date.now() + MAX_ECHO_TAIL_MS;
+          echoTailQuietTicksRef.current = 0;
+          if (resetVadStateRef.current) resetVadStateRef.current();
+          stateRef.current = 'listening';
+          setSaarthiState('listening');
+          if (fallbackTimeoutRef.current) {
+            clearTimeout(fallbackTimeoutRef.current);
+            fallbackTimeoutRef.current = null;
+          }
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume().catch((e) => console.warn('[MIC] Resume error:', e));
+          }
+          console.log('[MIC-STATE]', stateRef.current);
+          console.log('[WS-STATE]', wsRef.current?.readyState);
+          console.log('[DIAGNOSTIC-1] TTS END -> stateRef:', stateRef.current, '| wsReadyState:', wsRef.current?.readyState, '| audioCtxState:', audioCtx.state);
+          console.log('[GREETING-DONE] State:', stateRef.current, 'WS:', wsRef.current?.readyState, 'SessionReady:', isSessionReadyRef.current);
+        }, ACOUSTIC_COOLDOWN_MS);
+      }
+      return;
+    }
+
+    // Handle suspended AudioContext (browser autoplay policy)
+    if (audioCtx.state === 'suspended') {
+      console.warn('[Voice] AudioContext is suspended. Holding audio queue for user interaction.');
+      if (!(window as any)._audioPlayClickListenerAdded) {
+        (window as any)._audioPlayClickListenerAdded = true;
+        const resumeAudio = async () => {
+          console.log('[Voice] User interaction detected, attempting to resume AudioContext...');
+          if (audioContextRef.current?.state === 'suspended') {
+            try {
+              await audioContextRef.current.resume();
+              console.log('[Voice] AudioContext resumed successfully via user interaction.');
+              playNextAudio();
+            } catch (err) {
+              console.error('[Voice] Failed to resume on user interaction:', err);
+            }
+          } else {
+            playNextAudio();
+          }
+          window.removeEventListener('click', resumeAudio, true);
+          window.removeEventListener('keydown', resumeAudio, true);
+          window.removeEventListener('touchstart', resumeAudio, true);
+          (window as any)._audioPlayClickListenerAdded = false;
+        };
+        window.addEventListener('click', resumeAudio, true);
+        window.addEventListener('keydown', resumeAudio, true);
+        window.addEventListener('touchstart', resumeAudio, true);
+      }
+      return;
+    }
+
+    // Prevent concurrent scheduling re-entrancy
+    if (isSchedulingRef.current) {
+      return;
+    }
+    isSchedulingRef.current = true;
+
+    try {
+      isPlayingRef.current = true;
+        if (stateRef.current !== 'speaking' && stateRef.current !== 'greeting') {
+          stateRef.current = 'speaking';
+          setSaarthiState('speaking');
+      }
+
+      // 1. GAPLESS SCHEDULING: Drain all ready buffers from audioQueueRef and schedule sequentially
+      while (audioQueueRef.current.length > 0) {
+        const buffer = audioQueueRef.current.shift()!;
+        const source = audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioCtx.destination);
+
+        const now = audioCtx.currentTime;
+        // If nextStartTimeRef is in the past (e.g. initial buffer or buffer underrun),
+        // give a tiny 25ms lead-time to avoid hardware crackle on stream start.
+        // Otherwise, schedule seamlessly at nextStartTimeRef.current.
+        const isFirstOrUnderrun = nextStartTimeRef.current < now;
+        const startTime = isFirstOrUnderrun ? now + 0.025 : Math.max(now, nextStartTimeRef.current);
+        const duration = buffer.duration;
+        nextStartTimeRef.current = startTime + duration;
+        if (greetingPlaybackRef.current.active && greetingPlaybackRef.current.startedAt === null) {
+          greetingPlaybackRef.current.startedAt = startTime;
+        }
+
+        console.log(
+          `[Voice-PCM] Scheduled buffer: start=${startTime.toFixed(4)}s, dur=${duration.toFixed(4)}s, ctxTime=${now.toFixed(4)}s, leadTime=${(startTime - now).toFixed(4)}s, activeSources=${activeSourcesRef.current.size + 1}`
+        );
+
+        activeSourcesRef.current.add(source);
+        currentAudioSourceRef.current = source;
+
+        source.onended = () => {
+          activeSourcesRef.current.delete(source);
+          try {
+            source.disconnect();
+          } catch (_) {}
+
+          // Check if all scheduled buffers have finished AND queue is empty
+          if (activeSourcesRef.current.size === 0 && audioQueueRef.current.length === 0) {
+            if (isFinalChunkReceived.current) {
+              console.log('[Voice-PCM] All scheduled buffers ended. Stream complete.');
+              isPlayingRef.current = false;
+              markTtsPlaybackStopped();
+
+              // Immediate buffer purge: drop any speaker audio captured by the microphone during playback
+              preRollFramesRef.current = [];
+              userRecordedBytesRef.current = 0;
+              userHasSpokenRef.current = false;
+
+              console.log(`[VERIFY-DIAGNOSTIC] (a) Audio playback complete (readout finished). Starting ${ACOUSTIC_COOLDOWN_MS}ms acoustic cooldown.`);
+
+              if (ttsCooldownTimerRef.current) {
+                clearTimeout(ttsCooldownTimerRef.current);
+              }
+
+              ttsCooldownTimerRef.current = setTimeout(() => {
+                ttsCooldownTimerRef.current = null;
+                if (!isVoiceEnabledRef.current) return;
+
+                console.log(`[VERIFY-DIAGNOSTIC] (b) Acoustic cooldown elapsed (${ACOUSTIC_COOLDOWN_MS}ms). Mic re-armed. Transitioning state: speaking -> listening.`);
+                isFinalChunkReceived.current = false;
+                userHasSpokenRef.current = false;
+                userRecordedBytesRef.current = 0;
+                nextStartTimeRef.current = 0;
+                pcmChunkBufferRef.current = [];
+                pcmByteLeftoverRef.current = null;
+                preRollFramesRef.current = [];
+                echoTailActiveRef.current = true;
+                echoTailDeadlineRef.current = Date.now() + MAX_ECHO_TAIL_MS;
+                echoTailQuietTicksRef.current = 0;
+                if (resetVadStateRef.current) resetVadStateRef.current();
+                stateRef.current = 'listening';
+                setSaarthiState('listening');
+
+                if (fallbackTimeoutRef.current) {
+                  clearTimeout(fallbackTimeoutRef.current);
+                  fallbackTimeoutRef.current = null;
+                }
+                if (audioCtx.state === 'suspended') {
+                  audioCtx.resume().catch((e) => console.warn('[MIC] Resume error:', e));
+                }
+                console.log('[MIC-STATE]', stateRef.current);
+                console.log('[WS-STATE]', wsRef.current?.readyState);
+                console.log('[DIAGNOSTIC-1] TTS END -> stateRef:', stateRef.current, '| wsReadyState:', wsRef.current?.readyState, '| audioCtxState:', audioCtx.state);
+                console.log('[GREETING-DONE] State:', stateRef.current, 'WS:', wsRef.current?.readyState, 'SessionReady:', isSessionReadyRef.current);
+              }, ACOUSTIC_COOLDOWN_MS);
+            } else {
+              console.log('[Voice-PCM] Active buffer pool drained, awaiting more streaming chunks...');
+            }
+          }
+        };
+
+        try {
+          source.start(startTime);
+          markTtsPlaybackStarted();
+        } catch (err: any) {
+          console.error('[Voice-PCM] source.start threw error:', err);
+          activeSourcesRef.current.delete(source);
+          try {
+            source.disconnect();
+          } catch (_) {}
+        }
+      }
+      scheduleGreetingTalkingVideo(audioCtx);
+    } finally {
+      isSchedulingRef.current = false;
+    }
+  }, [markTtsPlaybackStarted, markTtsPlaybackStopped, scheduleGreetingTalkingVideo, setSaarthiState]);
+
+  useEffect(() => {
+    playNextAudioRef.current = playNextAudio;
+  }, [playNextAudio]);
+
+  useEffect(() => {
+    (window as any)._saarthiDisableVoice = disableVoice;
+    (window as any)._saarthiEnableVoice = enableVoice;
+    (window as any)._saarthiPlayNextAudio = playNextAudio;
+    (window as any)._saarthiNotifyPageChange = notifyPageChange;
+    return () => {
+      delete (window as any)._saarthiDisableVoice;
+      delete (window as any)._saarthiEnableVoice;
+      delete (window as any)._saarthiPlayNextAudio;
+      delete (window as any)._saarthiNotifyPageChange;
+    };
+  }, [disableVoice, enableVoice, playNextAudio, notifyPageChange]);
+
+  // ── PERSISTENT MICROPHONE & VAD EFFECT (Lifetime tied to WS Connection) ──
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const vadAudioCtxRef = useRef<AudioContext | null>(null);
+  const vadIntervalRef = useRef<any>(null);
+
+  // Reset speech counters whenever entering 'listening' mode (User turn starts)
+  useEffect(() => {
+    if (state === 'listening') {
+      console.log('[Voice] Entered LISTENING state. Resetting user speech byte counters.');
+      userRecordedBytesRef.current = 0;
+      userHasSpokenRef.current = false;
+      preRollFramesRef.current = [];
+    }
+  }, [state]);
+
+  useEffect(() => {
+    console.log('[Voice] mic useEffect triggered | isConnected:', isConnected, '| micStreamActive:', !!(micStreamRef.current && micStreamRef.current.active));
+    if (!isConnected) return;
+
+    if (micStreamRef.current && micStreamRef.current.active && processorRef.current) {
+      console.log('[Voice] Persistent microphone stream is ALREADY active. Preserving active stream.');
+      return;
+    }
+
+    console.log('[Voice] Initializing PERSISTENT microphone stream for WebSocket session...');
+
+    navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+      } as MediaTrackConstraints
+    })
+      .then(stream => {
+        micStreamRef.current = stream;
+        console.log('[Voice] Persistent Microphone permission granted & stream active');
+
+        if (!audioContextRef.current) {
+          try {
+            audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+          } catch (e) {
+            audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+          }
+        }
+        if (audioContextRef.current.state === 'suspended') {
+          audioContextRef.current.resume().catch(() => {});
+        }
+
+        // ── ECHO FIX: capture runs in its OWN 16kHz context, fully isolated from the TTS
+        // playback context so microphone nodes can never reach the speaker graph. Requesting
+        // 16000Hz natively also lets the browser do high-quality resampling for us instead of
+        // our crude 24k -> 16k decimation, which was garbling transcriptions.
+        let micAudioCtx: AudioContext;
+        try {
+          micAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+        } catch (e) {
+          micAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        }
+        micAudioCtxRef.current = micAudioCtx;
+        if (micAudioCtx.state === 'suspended') {
+          micAudioCtx.resume().then(() => console.log('[Voice] Mic AudioContext resumed for persistent mic input')).catch(() => {});
+        }
+        console.log(`[Voice] Mic capture AudioContext sampleRate: ${micAudioCtx.sampleRate}Hz (target 16000Hz)`);
+
+        // ── AUTOPLAY UNBLOCKER: Attach global user interaction listeners ──
+        const resumeAllAudioContexts = () => {
+          if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+            audioContextRef.current.resume().then(() => {
+              console.log('[Voice] Main audioContextRef resumed via user interaction! State:', audioContextRef.current?.state);
+            }).catch(e => console.warn('[Voice] Main AudioContext resume error:', e));
+          }
+          if (vadAudioCtxRef.current && vadAudioCtxRef.current.state === 'suspended') {
+            vadAudioCtxRef.current.resume().then(() => {
+              console.log('[Voice] vadAudioCtxRef resumed via user interaction! State:', vadAudioCtxRef.current?.state);
+            }).catch(e => console.warn('[Voice] VAD AudioContext resume error:', e));
+          }
+          if (micAudioCtxRef.current && micAudioCtxRef.current.state === 'suspended') {
+            micAudioCtxRef.current.resume().catch(e => console.warn('[Voice] Mic AudioContext resume error:', e));
+          }
+        };
+
+        window.addEventListener('click', resumeAllAudioContexts, true);
+        window.addEventListener('pointerdown', resumeAllAudioContexts, true);
+        window.addEventListener('touchstart', resumeAllAudioContexts, true);
+        window.addEventListener('keydown', resumeAllAudioContexts, true);
+
+        const sourceNode = micAudioCtx.createMediaStreamSource(stream);
+        const processor = micAudioCtx.createScriptProcessor(4096, 1, 1);
+        processorRef.current = processor;
+        let chunkCounter = 0;
+
+        processor.onaudioprocess = (event) => {
+          const inputData = event.inputBuffer.getChannelData(0);
+          const resampledData = downsampleTo16kHz(inputData, micAudioCtx.sampleRate || 16000);
+          const pcm16 = float32ToPCM16(resampledData);
+          const base64data = uint8ArrayToBase64(pcm16);
+
+          // Maintain rolling pre-roll buffer (3 chunks) so opening syllables are never clipped.
+          // ECHO FIX: never buffer audio captured while Saarthi is speaking or thinking, otherwise
+          // the pre-roll flush would ship the tail of Saarthi's own reply to the STT engine.
+          if (stateRef.current === 'listening') {
+            preRollFramesRef.current.push({ data: base64data, bytes: pcm16.byteLength });
+            if (preRollFramesRef.current.length > 3) {
+              preRollFramesRef.current.shift();
+            }
+          } else {
+            preRollFramesRef.current = [];
+          }
+
+          if (chunkCounter % 20 === 0) {
+            console.log(`[AUDIO-PROCESS-DIAGNOSTIC] stateRef=${stateRef.current}, wsState=${wsRef.current?.readyState}, isSessionReady=${isSessionReadyRef.current}`);
+          }
+
+          // Stream AUDIO_FRAMEs ONLY when listening for user speech and WebSocket is open.
+          // ECHO FIX: also require that no TTS playback is in flight.
+          if (stateRef.current === 'listening' && !isPlayingRef.current && wsRef.current?.readyState === WebSocket.OPEN && isSessionReadyRef.current) {
+            // Only stream audio to server and accumulate bytes once real user speech has been detected by VAD
+            if (userHasSpokenRef.current) {
+              // Flush pre-roll buffer if starting a new utterance
+              if (userRecordedBytesRef.current === 0 && preRollFramesRef.current.length > 0) {
+                const preRollToFlush = preRollFramesRef.current.slice();
+                for (const pf of preRollToFlush) {
+                  userRecordedBytesRef.current += pf.bytes;
+                  sendWsMessage({
+                    type: 'AUDIO_FRAME',
+                    payload: { data: pf.data },
+                  });
+                }
+              }
+
+              chunkCounter++;
+              userRecordedBytesRef.current += pcm16.byteLength;
+              
+              // Hard Safety Cap: If accumulated user speech bytes reach ~10 seconds (320,000 bytes), force AUDIO_END dispatch
+              if (!audioEndSent && userRecordedBytesRef.current >= 320000) {
+                console.warn('[HARD-SAFETY-CAP-TRIGGERED] User audio buffer reached 320,000 bytes (~10s). Forcing AUDIO_END dispatch.');
+                audioEndSent = true;
+                currentRequestIdRef.current = generateUUID();
+                activeRequestIdRef.current = currentRequestIdRef.current;
+                sendWsMessage({
+                  type: 'AUDIO_END',
+                  request_id: currentRequestIdRef.current,
+                  payload: {
+                    current_page: window.location.pathname + window.location.search,
+                    active_field: activeFieldRef.current,
+                    dom_form_data: getFormStateData(),
+                    user_edited_fields: Array.from(userEditedFieldsRef.current),
+                  }
+                });
+                userHasSpokenRef.current = false;
+                userRecordedBytesRef.current = 0;
+                preRollFramesRef.current = [];
+                stateRef.current = 'thinking';
+                setSaarthiState('thinking');
+                // BUG-11.1 FIX: Start 12s watchdog — if no AI_RESPONSE arrives, unfreeze to listening
+                if (thinkingWatchdogRef.current) clearTimeout(thinkingWatchdogRef.current);
+                thinkingWatchdogRef.current = setTimeout(() => {
+                  if (stateRef.current === 'thinking') {
+                    console.warn('[FREEZE-RECOVERY] Thinking watchdog fired — no AI_RESPONSE in 12s. Recovering to listening.');
+                    stateRef.current = 'listening';
+                    setSaarthiState('listening');
+                    announceMessage('Maaf kijiye, response mein thodi der ho gayi. Kripya dobara boliye.', false);
+                    thinkingWatchdogRef.current = null;
+                  }
+                }, 12000);
+              } else {
+                if (chunkCounter % 10 === 0) {
+                  console.log(`[VAD-DIAGNOSTIC] Streaming AUDIO_FRAME (chunk ${chunkCounter}). Total user bytes: ${userRecordedBytesRef.current}. Sending via WebSocket...`);
+                }
+                sendWsMessage({
+                  type: 'AUDIO_FRAME',
+                  payload: { data: base64data },
+                });
+              }
+            }
+          } else if (!isSessionReadyRef.current) {
+            // Discard audio captured during connection/handshake gap so stale audio does not garble future utterances
+            userRecordedBytesRef.current = 0;
+            userHasSpokenRef.current = false;
+          }
+        };
+
+        // ── ECHO FIX: terminate the capture chain in a MUTED sink. Previously the mic
+        // ScriptProcessor was connected to audioCtx.destination (the same graph that plays
+        // Saarthi's TTS), creating a live microphone -> speaker path.
+        const micSink = micAudioCtx.createGain();
+        micSink.gain.value = 0;
+        if (micAudioCtx.sampleRate > 16000) {
+          // Browser ignored our 16kHz request (Safari): low-pass below Nyquist before decimating
+          const antiAlias = micAudioCtx.createBiquadFilter();
+          antiAlias.type = 'lowpass';
+          antiAlias.frequency.value = 7000;
+          antiAlias.Q.value = 0.707;
+          sourceNode.connect(antiAlias);
+          antiAlias.connect(processor);
+        } else {
+          sourceNode.connect(processor);
+        }
+        processor.connect(micSink);
+        micSink.connect(micAudioCtx.destination);
+
+        // VAD Setup — reuses the isolated mic context so only ONE capture graph exists
+        const vadAudioCtx = micAudioCtx;
+        vadAudioCtxRef.current = vadAudioCtx;
+        if (vadAudioCtx.state === 'suspended') {
+          vadAudioCtx.resume().catch(() => {});
+        }
+
+        const vadSource = vadAudioCtx.createMediaStreamSource(stream);
+        const analyser = vadAudioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.minDecibels = -80;
+        analyser.smoothingTimeConstant = 0.1;
+        vadSource.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        let lastSpeechTime = Date.now();
+        let audioEndSent = false;
+        let backgroundNoise = 3.0; // Default sensible quiet room baseline
+        let initialCalibrationTicks = 0;
+        let calibrationSum = 0;
+        let speechConfidence = 0;
+
+        resetVadStateRef.current = () => {
+          userHasSpokenRef.current = false;
+          userRecordedBytesRef.current = 0;
+          preRollFramesRef.current = [];
+          audioEndSent = false;
+          speechConfidence = 0;
+          lastSpeechTime = Date.now();
+          console.log('[VAD] Pipeline state reset on route change / page navigation');
+        };
+
+        vadIntervalRef.current = window.setInterval(() => {
+          // Periodically attempt resume if suspended
+          if (vadAudioCtxRef.current?.state === 'suspended') {
+            vadAudioCtxRef.current.resume().catch(() => {});
+          }
+          if (audioContextRef.current?.state === 'suspended') {
+            audioContextRef.current.resume().catch(() => {});
+          }
+
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const average = sum / dataArray.length;
+
+          // Fix 2 (VAD gating): Hold speech detection and keep state clean when Saarthi is speaking TTS or thinking
+          if ((stateRef.current as string) === 'speaking' || (stateRef.current as string) === 'thinking' || isPlayingRef.current) {
+            lastSpeechTime = Date.now();
+            audioEndSent = false;
+            speechConfidence = 0;
+            return;
+          }
+
+          // ── ECHO FIX: adaptive echo-tail hold ──────────────────────────────────
+          // Saarthi's reply keeps sounding in the room (loudspeaker latency + reverb) after
+          // playback ends. Rather than guessing a fixed delay, keep the mic gated until the
+          // input level has genuinely decayed back to the room noise floor. In a quiet room or
+          // on headphones this releases in ~200ms; it is hard-capped so a user who starts
+          // talking immediately is never locked out.
+          if (echoTailActiveRef.current) {
+            const quietLevel = Math.max(6.5, backgroundNoise + 3.0);
+            if (average < quietLevel) {
+              echoTailQuietTicksRef.current++;
+            } else {
+              echoTailQuietTicksRef.current = 0;
+            }
+            const decayed = echoTailQuietTicksRef.current >= ECHO_TAIL_QUIET_TICKS;
+            const capped = Date.now() > echoTailDeadlineRef.current;
+            if (decayed || capped) {
+              echoTailActiveRef.current = false;
+              console.log(`[ECHO-TAIL] Released after ${decayed ? 'level decayed to room floor' : 'hard cap'} | avg=${average.toFixed(2)} | floor=${backgroundNoise.toFixed(2)}`);
+            } else {
+              // Still hearing Saarthi's own tail — discard everything captured in this window
+              lastSpeechTime = Date.now();
+              speechConfidence = 0;
+              audioEndSent = false;
+              userHasSpokenRef.current = false;
+              userRecordedBytesRef.current = 0;
+              preRollFramesRef.current = [];
+              return;
+            }
+          }
+
+          // BUG-11.3 FIX: Reduced to 3-tick (300ms) calibration so onboarding page VAD warms up faster
+          if (initialCalibrationTicks < 3) {
+            calibrationSum += average;
+            initialCalibrationTicks++;
+            lastSpeechTime = Date.now();
+            speechConfidence = 0;
+            if (initialCalibrationTicks === 3) {
+              backgroundNoise = Math.min(10.0, Math.max(2.5, calibrationSum / 3));
+              console.log('[VAD-CALIBRATED] Ambient room noise baseline (3-tick fast-start):', backgroundNoise.toFixed(2));
+            }
+            return;
+          }
+
+          // Responsive Dynamic threshold with +2.2 SNR delta (minimum 6.5, clamped max baseline 14.0)
+          const DYNAMIC_THRESHOLD = Math.max(6.5, backgroundNoise + 2.2);
+          const PEAK_THRESHOLD = DYNAMIC_THRESHOLD + 3.0;
+
+          // High-Sensitivity Leaky Integrator:
+          // 1. Strong speech spike (>= PEAK_THRESHOLD) -> +2 confidence.
+          // 2. Normal speech (>= DYNAMIC_THRESHOLD) -> +1 confidence.
+          // 3. Below threshold -> gently decrement (-1).
+          if (average >= PEAK_THRESHOLD) {
+            speechConfidence = Math.min(6, speechConfidence + 2);
+          } else if (average >= DYNAMIC_THRESHOLD) {
+            speechConfidence = Math.min(6, speechConfidence + 1);
+          } else {
+            speechConfidence = Math.max(0, speechConfidence - 1);
+          }
+
+          // Trigger on sustained confidence (>= 2) or sharp speech spike (>= PEAK_THRESHOLD with confidence >= 1)
+          // Eliminates single-tick false-positive triggers on low-amplitude ambient noise/clicks
+          if (speechConfidence >= 2 || (average >= PEAK_THRESHOLD && speechConfidence >= 1)) {
+            if (!userHasSpokenRef.current) {
+              console.log('[PROXIMITY-SPEECH-DETECTED]', 'avg:', average.toFixed(2), 'threshold:', DYNAMIC_THRESHOLD.toFixed(2), 'confidence:', speechConfidence);
+            }
+            userHasSpokenRef.current = true;
+            audioEndSent = false;
+            lastSpeechTime = Date.now();
+          }
+
+          const silentFor = Date.now() - lastSpeechTime;
+
+          // Adaptive noise floor tracking during prolonged silence (EMA update, minimum floor 4.0)
+          if (silentFor > 1000 && average < 6.5 && !userHasSpokenRef.current) {
+            backgroundNoise = Math.min(10.0, Math.max(4.0, backgroundNoise * 0.95 + average * 0.05));
+          }
+
+          if (Date.now() % 500 < 100) {
+            console.log(`[VAD-TICK] avg: ${average.toFixed(2)} | thresh: ${DYNAMIC_THRESHOLD.toFixed(2)} | conf: ${speechConfidence} | spoken: ${userHasSpokenRef.current} | bytes: ${userRecordedBytesRef.current} | silentFor: ${silentFor}ms`);
+          }
+
+          // High-Responsiveness Silence Timeout: 750ms for normal speech, 1400ms for slow complex fields
+          const currentActiveFld = activeFieldRef.current || '';
+          const isSlowField = ['pandit-phone', 'phone', 'pandit-email', 'email', 'pandit-gurukul', 'education'].includes(currentActiveFld);
+          const silenceThreshold = isSlowField ? 1400 : 750;
+          if (userHasSpokenRef.current && !audioEndSent && silentFor >= silenceThreshold) {
+            if (isNavigatingRef.current) {
+              return;
+            }
+
+            // Fix 1 (byte guard — highest priority safety net):
+            const MIN_BYTES_FOR_VALID_SPEECH = 12800; // ~400ms of 16kHz 16-bit mono audio
+            if (userRecordedBytesRef.current < MIN_BYTES_FOR_VALID_SPEECH) {
+              console.log(`[VAD-DISCARD-ZERO-BYTES] Discarding spurious trigger: recorded_bytes (${userRecordedBytesRef.current}) < min (${MIN_BYTES_FOR_VALID_SPEECH}). Resetting state silently.`);
+              userHasSpokenRef.current = false;
+              speechConfidence = 0;
+              audioEndSent = false;
+              userRecordedBytesRef.current = 0;
+              preRollFramesRef.current = [];
+              return;
+            }
+
+            audioEndSent = true;
+            const currentDomFormData = getFormStateData();
+            console.log('[AUDIO-END-SENT] Dispatching AUDIO_END for field:', activeFieldRef.current, 'recorded_bytes:', userRecordedBytesRef.current, 'silenceThreshold:', silenceThreshold, 'bioKeys:', {
+              'pandit-bio': currentDomFormData['pandit-bio'],
+              'bio': currentDomFormData['bio']
+            });
+
+            currentRequestIdRef.current = generateUUID();
+            activeRequestIdRef.current = currentRequestIdRef.current;
+            sendWsMessage({
+              type: 'AUDIO_END',
+              request_id: currentRequestIdRef.current,
+              payload: {
+                current_page: window.location.pathname + window.location.search,
+                active_field: activeFieldRef.current,
+                dom_form_data: currentDomFormData,
+                user_edited_fields: Array.from(userEditedFieldsRef.current),
+              }
+            });
+
+            userHasSpokenRef.current = false;
+            userRecordedBytesRef.current = 0;
+            preRollFramesRef.current = [];
+            speechConfidence = 0;
+            stateRef.current = 'thinking';
+            setSaarthiState('thinking');
+            // BUG-11.1 FIX: Start watchdog — 12s without AI_RESPONSE means the backend froze
+            if (thinkingWatchdogRef.current) clearTimeout(thinkingWatchdogRef.current);
+            thinkingWatchdogRef.current = setTimeout(() => {
+              if (stateRef.current === 'thinking') {
+                console.warn('[FREEZE-RECOVERY] Thinking watchdog fired (VAD path) — no AI_RESPONSE in 12s. Recovering.');
+                stateRef.current = 'listening';
+                setSaarthiState('listening');
+                announceMessage('Maaf kijiye, response mein thodi der ho gayi. Kripya dobara boliye.', false);
+                thinkingWatchdogRef.current = null;
+              }
+            }, 12000);
+            lastSpeechTime = Date.now();
+          }
+        }, 100);
+
+
+
+
+      })
+      .catch(err => {
+        console.error('[Voice] Persistent Microphone error', err);
+        setError('Could not access microphone');
+        setSaarthiState('idle');
+      });
+
+    return () => {
+      // Only destroy microphone stream tracks if the WebSocket connection is explicitly closed
+      if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+        console.log('[Voice] WebSocket closed. Tearing down persistent microphone stream...');
+        resetVadStateRef.current = null;
+        if (vadIntervalRef.current) window.clearInterval(vadIntervalRef.current);
+        if (vadAudioCtxRef.current && vadAudioCtxRef.current.state !== 'closed') {
+          vadAudioCtxRef.current.close().catch(() => {});
+        }
+        if (processorRef.current) {
+          try { processorRef.current.disconnect(); } catch (e) {}
+          try { processorRef.current.onaudioprocess = null; } catch (e) {}
+          processorRef.current = null;
+        }
+        if (micAudioCtxRef.current && micAudioCtxRef.current.state !== 'closed') {
+          micAudioCtxRef.current.close().catch(() => {});
+        }
+        micAudioCtxRef.current = null;
+        vadAudioCtxRef.current = null;
+        if (micStreamRef.current) {
+          micStreamRef.current.getTracks().forEach(track => track.stop());
+          micStreamRef.current = null;
+        }
+      } else {
+        console.log('[Voice] Component re-render/remount detected. Preserving active microphone stream & VAD context.');
+      }
+    };
+  }, [isConnected]);
+
+  const stopSpeaking = useCallback(() => {
+    console.log('[Voice] Barge-in / Stop requested. Halting speech.');
+    activeSourcesRef.current.forEach((source) => {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch (e) {}
+    });
+    activeSourcesRef.current.clear();
+    if (currentAudioSourceRef.current) {
+      try {
+        currentAudioSourceRef.current.stop();
+        currentAudioSourceRef.current.disconnect();
+      } catch (e) {}
+      currentAudioSourceRef.current = null;
+    }
+    audioQueueRef.current = [];
+    pcmChunkBufferRef.current = [];
+    pcmByteLeftoverRef.current = null;
+    nextStartTimeRef.current = 0;
+    isPlayingRef.current = false;
+    markTtsPlaybackStopped();
+    isFinalChunkReceived.current = false;
+    preRollFramesRef.current = [];
+    if (ttsCooldownTimerRef.current) {
+      clearTimeout(ttsCooldownTimerRef.current);
+      ttsCooldownTimerRef.current = null;
+    }
+    if (fallbackTimeoutRef.current) {
+      clearTimeout(fallbackTimeoutRef.current);
+      fallbackTimeoutRef.current = null;
+    }
+    userHasSpokenRef.current = false;
+    userRecordedBytesRef.current = 0;
+    echoTailActiveRef.current = true;
+    echoTailDeadlineRef.current = Date.now() + MAX_ECHO_TAIL_MS;
+    echoTailQuietTicksRef.current = 0;
+    if (resetVadStateRef.current) resetVadStateRef.current();
+    stateRef.current = 'listening';
+    setSaarthiState('listening');
+  }, [markTtsPlaybackStopped, setSaarthiState]);
+
+  return { isConnected, isSessionReady, error, isTtsPlaying, ttsPlaybackId, isGreetingTtsSpeaking, stopSpeaking, disableVoice, enableVoice };
+}

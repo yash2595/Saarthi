@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          cd 'final backend mantrasetu/mantrasetu-saarthi-backend-main'
+          pip install -r app/requirements.txt
+      - name: Run tests
+        run: pytest --tb=short
+
+  frontend-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install & lint
+        run: |
+          cd 'final frontend mantrasetu/MantraSetu-Saarthi-main'
+          npm ci
+          npm run lint

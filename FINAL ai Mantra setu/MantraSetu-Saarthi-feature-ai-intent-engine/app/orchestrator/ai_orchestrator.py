@@ -406,6 +406,13 @@ class AIOrchestrator:
             session.onboarding_state = {}
         pending_choices = getattr(session, 'pending_navigation_choices', [])
         nav_result = resolve_navigation_target(sanitized_req.user_message, pending_choices)
+        # An account clarification owns yes/no replies; page cancellation must not
+        # consume "nahi" before the existing/new-account branch can process it.
+        if getattr(session, 'pending_pandit_clarification', False) and not nav_result.get('target') and not nav_result.get('action'):
+            if re.fullmatch(r'\s*(?:cancel|stop|ruko|rehne do|कैंसल|कैंसिल|रुको|रहने दो)[.!।\s]*', sanitized_req.user_message.lower()):
+                session.pending_pandit_clarification = False
+            else:
+                nav_result = {'handled': False}
         msg_lower_check = sanitized_req.user_message.strip().lower()
         is_explicit_signup = any(w in msg_lower_check for w in ["register", "signup", "sign up", "onboard", "roop mein", "banna hai", "onboarding"])
         onboarding_state = getattr(session, "onboarding_state", None)
@@ -450,6 +457,9 @@ class AIOrchestrator:
         explicit_page_command = bool(re.search(r'\b(open|show|go to|kholo|dikhao|le chalo)\b|खोलो|दिखाओ', msg_lower_check))
         if nav_result.get('handled') and (not has_client_field or explicit_page_command or pending_choices):
             session.pending_navigation_choices = nav_result.get('choices', [])
+            if nav_result.get('target') or nav_result.get('action'):
+                session.pending_pandit_clarification = False
+                session.pending_tour_clarification = False
             # Page selection must not become a booking/DOB workflow.
             session.pending_booking = None
             session.pending_kundali = None
@@ -761,7 +771,7 @@ class AIOrchestrator:
             msg_lower = msg_raw.lower()
             
             # Check if user issued a new explicit navigation command (abandoning clarification)
-            if is_navigation_command(sanitized_req.user_message) and not any(w in msg_lower for w in ["pandit", "account", "login", "signup", "haan", "yes", "nahi", "no"]):
+            if (nav_result.get('target') or nav_result.get('action')) and not any(w in msg_lower for w in ["pandit", "account", "login", "signup", "haan", "yes", "nahi", "no"]):
                 session.pending_pandit_clarification = False
                 pending_clarification = False
 

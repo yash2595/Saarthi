@@ -19,6 +19,7 @@ from app.orchestrator.provider_manager import ProviderManager
     ('Muhurat kholo', '/muhurat-finder'), ('puja ka muhurat kholo', '/muhurat-finder'),
     ('signup kholo', '/sign-up'), ('register', '/sign-up'),
     ('pandit registration kholo', '/sign-up?role=pandit'), ('पंडित पंजीकरण खोलो', '/sign-up?role=pandit'),
+    ('पंडित ओनबोर्डिंग पेज पर लेकर चले।', '/sign-up?role=pandit'),
     ('pandit login', '/login?role=pandit'), ('login', '/login'),
     ('contact kholo', '/#contact'), ('about us', '/#mission'), ('profile kholo', '/dashboard'),
     ('kundali nahi, puja kholo', '/puja'), ('kundali nahi puja kholo', '/puja'),
@@ -83,3 +84,40 @@ def test_pandit_location_uses_actual_frontend_url():
     session = sessions.get_or_create_session('location-contract', 'default_conv')
     session.update_location(page='/sign-up?role=pandit')
     assert 'Panditji Registration' in build_location_response(session)
+
+
+@pytest.mark.parametrize('message', ['नहीं नहीं मेरा अकाउंट नहीं है।', 'नहीं नहीं मेरा काउंट नहीं है।', 'mera account nahi hai', 'नहीं', 'nahi'])
+def test_account_answer_reaches_registration_instead_of_cancelling_navigation(message):
+    async def scenario():
+        sessions = AISessionManager()
+        orchestrator = AIOrchestrator(session_manager=sessions)
+        sid = 'account-answer-' + uuid4().hex
+        session = sessions.get_or_create_session(sid, 'default_conv')
+        session.pending_pandit_clarification = True
+        with patch.object(ProviderManager, 'generate_with_failover', new_callable=AsyncMock) as llm, \
+             patch.object(LLMIntentDetector, 'detect', new_callable=AsyncMock) as intent:
+            result = await orchestrator.process(OrchestratorRequest(user_message=message, session_id=sid, current_page='/'))
+            assert result.navigation_directive['target'] in ('/signup?role=pandit', '/sign-up?role=pandit')
+            assert session.onboarding_state['active'] is True
+            assert session.pending_pandit_clarification is False
+            llm.assert_not_called()
+            intent.assert_not_called()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('message', ['नहीं नहीं मेरा अकाउंट नहीं है।', 'bhai error de raha hai sahi kaam nahi kar raha', 'I have no account'])
+def test_negative_conversation_is_not_a_page_cancellation(message):
+    assert resolve_navigation_target(message)['handled'] is False
+
+
+def test_new_page_command_clears_pending_account_question():
+    async def scenario():
+        sessions = AISessionManager()
+        orchestrator = AIOrchestrator(session_manager=sessions)
+        sid = 'leave-account-question-' + uuid4().hex
+        session = sessions.get_or_create_session(sid, 'default_conv')
+        session.pending_pandit_clarification = True
+        result = await orchestrator.process(OrchestratorRequest(user_message='कुंडली खोलो', session_id=sid, current_page='/'))
+        assert result.navigation_directive['target'] == '/kundali-creation'
+        assert session.pending_pandit_clarification is False
+    asyncio.run(scenario())

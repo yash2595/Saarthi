@@ -35,7 +35,12 @@ def resolve_navigation_target(message: str, pending=None) -> dict:
             if tail != text and match(tail, ACTION):
                 positive = [tail]
         if not positive:
-            return {**empty, 'handled': True, 'clarification_msg': 'Theek hai, page nahi badla.'}
+            # Negation in an answer ("mera account nahi hai") is not a page command.
+            standalone_cancel = re.fullmatch(r"(?:please\s+)?(?:cancel|stop|nahi|nahin|nhi|no|rehne do|chhodo|नहीं|रहने दो)[.!।\s]*", text)
+            page_reference = match(text, '|'.join(p[2] for p in ROUTES) + r'|page|पेज|login|signup|registration|लॉगिन|पंजीकरण')
+            if pending or standalone_cancel or (page_reference and match(text, ACTION)):
+                return {**empty, 'handled': True, 'clarification_msg': 'Theek hai, page nahi badla.'}
+            return empty
         text = ', '.join(positive)
     if pending:
         ordinal = re.fullmatch(r'(?:option\s*)?(first|pehla|पहला|second|dusra|doosra|दूसरा|third|teesra|तीसरा|last|aakhri|[1-9१-९])(?:\s+(?:wala|kholo|khol do|please|वाला|खोलो))*[.!।\s]*', text)
@@ -60,7 +65,7 @@ def resolve_navigation_target(message: str, pending=None) -> dict:
     pandit = bool(match(text, r'pandit|panditji|pandit ji|पंडित|पंडितजी'))
     for pattern, normal, special in [
         (r'login|log in|sign in|लॉगिन', '/login', '/login?role=pandit'),
-        (r'signup|sign up|register|registration|join|banna|onboarding|पंजीकरण|रजिस्ट्रेशन|बनना', '/sign-up', '/sign-up?role=pandit'),
+        (r'signup|sign up|register|registration|join|banna|onboarding|पंजीकरण|रजिस्ट्रेशन|ओनबोर्डिंग|ऑनबोर्डिंग|ऑनबोर्ड|बनना', '/sign-up', '/sign-up?role=pandit'),
     ]:
         hit = match(text, pattern)
         if hit:

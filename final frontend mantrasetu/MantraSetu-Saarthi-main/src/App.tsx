@@ -12,6 +12,7 @@ import NotFound from './pages/not-found';
 import Dashboard from './pages/dashboard';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { SaarthiProvider } from '@/components/saarthi';
+import { RouteScroll } from '@/components/RouteScroll';
 
 const queryClient = new QueryClient();
 
@@ -36,6 +37,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <SaarthiProvider>
+          <RouteScroll />
           <Router />
           <Toaster />
         </SaarthiProvider>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowRight,
@@ -18,18 +18,14 @@ export const primaryNavItems = {
   services: [
     { label: 'Book Puja', href: '/puja' },
     { label: 'Astrology', href: '/kundali-creation' },
-    { label: 'Havan', href: '/puja' },
-    { label: 'Katha', href: '/puja' },
+    { label: 'Havan', href: '/puja?q=Havan' },
+    { label: 'Katha', href: '/puja?q=Katha' },
     { label: 'Special Occasions', href: '/puja' },
     { label: 'Pandit Consultation', href: '/#contact' },
   ],
   spiritualTools: [
-    { label: 'Panchang', href: '/muhurat-finder' },
     { label: 'Muhurat Finder', href: '/muhurat-finder' },
-    { label: 'Rashifal', href: '/kundali-creation' },
     { label: 'Kundali', href: '/kundali-creation' },
-    { label: 'Gemstone Guide', href: '/kundali-creation' },
-    { label: 'Choghadiya', href: '/muhurat-finder' },
   ],
 };
 
@@ -38,10 +34,6 @@ const searchCatalog = [
   { label: 'Muhurat Finder', href: '/muhurat-finder', source: 'Find auspicious timings for weddings, griha pravesh and other events.' },
   { label: 'Kundali Creation', href: '/kundali-creation', source: 'Generate your Janam Kundali with Vedic astrology insights.' },
   { label: 'Pandit Consultation', href: '/#contact', source: 'Connect with verified panditjis for rituals and guidance.' },
-  { label: 'Rashifal', href: '/kundali-creation', source: 'Daily, weekly and monthly horoscope for all zodiac signs.' },
-  { label: 'Panchang', href: '/muhurat-finder', source: "Today's panchang with tithi, nakshatra, yoga and auspicious timings." },
-  { label: 'Choghadiya', href: '/muhurat-finder', source: 'Day and night choghadiya for auspicious muhurat timings.' },
-  { label: 'Gemstone Guide', href: '/kundali-creation', source: 'Vedic gemstone recommendations by zodiac sign and planet.' },
   { label: 'Contact', href: '/#contact', source: 'Get in touch with the MantraSetu team.' },
   { label: 'Special Pujas', href: '/puja', source: 'Ceremonies for meaningful moments and special occasions.' },
   { label: 'Pandit Onboarding', href: '/sign-up?role=pandit', source: 'Join the MantraSetu network as a verified panditji.' },
@@ -62,6 +54,18 @@ export function SiteHeader({
   const [searchTerm, setSearchTerm] = useState('');
   const [scrolled, setScrolled] = useState(false);
   const [activeDropdown, setActiveDropdown] = useState<'services' | 'spiritual-tools' | null>(null);
+  const headerRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      if (headerRef.current && event.target instanceof Node && !headerRef.current.contains(event.target)) {
+        setActiveDropdown(null);
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    return () => document.removeEventListener('pointerdown', closeOutside);
+  }, []);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 30);
@@ -97,15 +101,16 @@ export function SiteHeader({
   const contactHref = isHome ? '#contact' : '/#contact';
 
   const renderLink = (href: string, className: string, children: React.ReactNode, extraProps: Record<string, any> = {}) => {
-    if (href.startsWith('#') || href.startsWith('/#')) {
+    const { key, ...props } = extraProps;
+    if (href.startsWith('#')) {
       return (
-        <a href={href} className={className} {...extraProps}>
+        <a key={key} href={href} className={className} {...props}>
           {children}
         </a>
       );
     }
     return (
-      <Link to={href} className={className} {...extraProps}>
+      <Link key={key} to={href} className={className} {...props}>
         {children}
       </Link>
     );
@@ -113,7 +118,8 @@ export function SiteHeader({
 
   return (
     <>
-      <header className={`site-header ${scrolled ? 'scrolled' : ''}`} data-testid="site-header">
+      <header ref={headerRef} className={`site-header ${scrolled ? 'scrolled' : ''}`} data-testid="site-header"
+        onKeyDown={event => { if (event.key === 'Escape') { setActiveDropdown(null); setMenuOpen(false); } }}>
         <div className="container-wide header-inner">
           {renderLink(homeHref, 'brand-link', <img className="brand-mark" src="/mantrasetu-logo.svg" alt="MantraSetu" data-testid="img-mantrasetu-logo" />, { onClick: closeNavigation, 'data-testid': 'link-home-logo' })}
 
@@ -121,20 +127,19 @@ export function SiteHeader({
             {renderLink(homeHref, 'nav-link', 'Home', { onClick: closeNavigation, 'data-testid': 'link-nav-home' })}
             <div
               className={`nav-dropdown ${activeDropdown === 'services' ? 'open' : ''}`}
-              onMouseEnter={() => setActiveDropdown('services')}
-              onMouseLeave={() => setActiveDropdown(null)}
             >
               <button
                 className="nav-link nav-menu-trigger"
                 type="button"
                 aria-expanded={activeDropdown === 'services'}
                 aria-haspopup="true"
+                aria-controls="services-navigation-menu"
                 onClick={() => setActiveDropdown(activeDropdown === 'services' ? null : 'services')}
                 data-testid="button-nav-services"
               >
                 Services <ChevronDown size={13} />
               </button>
-              <div className="nav-dropdown-menu" role="menu">
+              <div className="nav-dropdown-menu" role="menu" aria-label="Services" id="services-navigation-menu">
                 {primaryNavItems.services.map((item) => (
                   renderLink(
                     item.href,
@@ -152,20 +157,19 @@ export function SiteHeader({
             </div>
             <div
               className={`nav-dropdown ${activeDropdown === 'spiritual-tools' ? 'open' : ''}`}
-              onMouseEnter={() => setActiveDropdown('spiritual-tools')}
-              onMouseLeave={() => setActiveDropdown(null)}
             >
               <button
                 className="nav-link nav-menu-trigger"
                 type="button"
                 aria-expanded={activeDropdown === 'spiritual-tools'}
                 aria-haspopup="true"
+                aria-controls="spiritual-navigation-menu"
                 onClick={() => setActiveDropdown(activeDropdown === 'spiritual-tools' ? null : 'spiritual-tools')}
                 data-testid="button-nav-spiritual-tools"
               >
                 Spiritual Tools <ChevronDown size={13} />
               </button>
-              <div className="nav-dropdown-menu" role="menu">
+              <div className="nav-dropdown-menu" role="menu" aria-label="Spiritual Tools" id="spiritual-navigation-menu">
                 {primaryNavItems.spiritualTools.map((item) => (
                   renderLink(
                     item.href,
@@ -311,10 +315,6 @@ export function SiteFooter() {
           <Link to="/puja">Book Puja</Link>
           <Link to="/muhurat-finder">Muhurat Finder</Link>
           <Link to="/kundali-creation">Kundali</Link>
-          <Link to="/kundali-creation">Rashifal</Link>
-          <Link to="/muhurat-finder">Panchang</Link>
-          <Link to="/kundali-creation">Gemstone Guide</Link>
-          <Link to="/muhurat-finder">Choghadiya</Link>
           <a href="/#contact">Contact</a>
           <div className="footer-links">
             <Link to="/sign-up?role=pandit">Pandit Registration</Link>

@@ -73,3 +73,38 @@ test('booking navigation selects the requested title rather than the first descr
   assert.equal(uniqueServiceForBooking(services, ''), undefined);
   assert.equal(uniqueServiceForBooking(services, 'Unknown Puja'), undefined);
 });
+
+test('choices follow the order spoken and all offered ordinals can be selected', () => {
+  const reply = resolveNavigationMessage('muhurat ya kundali dikhao');
+  assert.deepEqual(reply.choices.map(choice => choice.path), ['/muhurat-finder', '/kundali-creation']);
+  assert.equal(resolveNavigationMessage('pehla wala kholo', reply.choices).destination.path, '/muhurat-finder');
+  const help = resolveNavigationMessage('madad');
+  assert.equal(resolveNavigationMessage('teesra kholo', help.choices).destination.path, '/muhurat-finder');
+  assert.equal(resolveNavigationMessage('number 5', help.choices).destination.path, '/login');
+  assert.equal(resolveNavigationMessage('आखिरी', help.choices).destination.path, '/login');
+  assert.equal(resolveNavigationMessage('muhurat ya kundali').kind, 'clarify');
+  assert.equal(resolveNavigationMessage('home wapas jao').destination.path, '/');
+});
+
+test('unimplemented tools never pretend to open a different tool', () => {
+  for (const text of ['rashifal dikhao', 'Panchang kholo', 'gemstone guide', 'चौघड़िया दिखाओ']) {
+    const reply = resolveNavigationMessage(text);
+    assert.equal(reply.kind, 'unavailable');
+    assert.equal(reply.destination, undefined);
+  }
+});
+
+test('a corrected request navigates only to the positive clause', () => {
+  for (const message of ['kundali nahi, puja kholo', 'kundali nahi puja kholo', "don't open kundali, open puja", 'कुंडली नहीं, पूजा खोलो']) {
+    assert.equal(resolveNavigationMessage(message).destination.path, '/puja', message);
+  }
+  assert.equal(resolveNavigationMessage('puja ka muhurat dikhao').destination.path, '/muhurat-finder');
+});
+
+test('personal details and discussion do not become navigation commands just because a name matches a service', () => {
+  for (const message of ['mera naam Ganesh hai', 'my name is Ganesh', 'मैं गणेश हूँ', 'I am reading about kundali', 'mera email ganesh@example.com hai', 'mera email login@example.invalid hai', 'mera naam Login hai']) {
+    assert.equal(resolveNavigationMessage(message).kind, 'unknown', message);
+  }
+  assert.equal(resolveNavigationMessage('Laxmi Kuber puja dikhao').destination.path, '/puja?q=Laxmi%20Kuber');
+  assert.equal(resolveNavigationMessage('navgraha shanti kholo').destination.path, '/puja?q=Navgraha%20Shanti');
+});

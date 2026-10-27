@@ -91,20 +91,19 @@ export default function SignUp() {
   const location = useLocation();
 
   // Check URL params for role=pandit preselection
-  const [userType, setUserType] = useState<'devotee' | 'pandit'>('devotee');
+  const [userType, setUserType] = useState<'devotee' | 'pandit'>(() => {
+    const params = new URLSearchParams(location.search);
+    return params.get('role') === 'pandit' || params.get('type') === 'pandit' || params.has('draft') ? 'pandit' : 'devotee';
+  });
 
   useEffect(() => {
-    const searchStr = location.search || window.location.search;
-    const params = new URLSearchParams(searchStr);
+    const params = new URLSearchParams(location.search);
     const roleParam = params.get('role') || params.get('type');
-    if (roleParam === 'pandit') {
-      setUserType('pandit');
-    } else if (roleParam === 'devotee') {
-      setUserType('devotee');
-    }
+    const nextRole = roleParam === 'pandit' || params.has('draft') ? 'pandit' : 'devotee';
+    setUserType(nextRole);
 
-    if (roleParam === 'pandit' || userType === 'pandit') {
-      setTimeout(() => {
+    if (nextRole === 'pandit') {
+      const timer = setTimeout(() => {
         const formSection = document.querySelector('.registration-form') 
         || document.querySelector('form') 
         || document.querySelector('[data-section="personal-info"]');
@@ -112,8 +111,9 @@ export default function SignUp() {
           formSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
       }, 500);
+      return () => clearTimeout(timer);
     }
-  }, [location.search, location.pathname, location.key, userType]);
+  }, [location.search, location.pathname, location.key]);
 
 
 
@@ -286,6 +286,7 @@ export default function SignUp() {
 
   // ── SESSION STORAGE PERSISTENCE & RELOAD RESTORATION ──
   useEffect(() => {
+    let active = true;
     const populateFormData = (data: any) => {
       // ── Step position (CRITICAL: restore saved step during mid-form refresh) ──
       if (data.panditStep && [1, 2, 3].includes(data.panditStep)) {
@@ -326,12 +327,12 @@ export default function SignUp() {
       if (draftId) {
         try {
           const res = await authService.getDraft(draftId);
-          if (res.status === 'success' && res.data) {
+          if (active && res.status === 'success' && res.data) {
             setUserType('pandit'); // CRITICAL: Set user type to pandit so the form renders!
             populateFormData(res.data);
             console.log('[DRAFT] Restored form data from backend draft');
             // Clean up URL so refresh doesn't refetch
-            window.history.replaceState({}, document.title, location.pathname + "?role=" + (userType || 'pandit'));
+            navigate(location.pathname + '?role=pandit', { replace: true });
           }
         } catch (err) {
           console.error('[DRAFT] Failed to fetch draft', err);
@@ -375,7 +376,8 @@ export default function SignUp() {
     };
     
     loadDraft();
-  }, [location.search, userType]);
+    return () => { active = false; };
+  }, [location.search, location.pathname, navigate]);
 
   // ── VOICE ASSISTANT STEP SYNC ──
   // Listen for active_field changes from Saarthi voice agent and switch UI tab/step dynamically
@@ -955,7 +957,7 @@ export default function SignUp() {
               <button
                 type="button"
                 onClick={() => {
-                  setUserType('devotee');
+                  navigate('/sign-up');
                   setErrors({});
                 }}
                 style={{
@@ -978,7 +980,7 @@ export default function SignUp() {
               <button
                 type="button"
                 onClick={() => {
-                  setUserType('pandit');
+                  navigate('/sign-up?role=pandit');
                   setErrors({});
                 }}
                 style={{

@@ -174,11 +174,10 @@ export default function Puja() {
   useEffect(() => {
     const sParam = searchParams.get('service');
     const qParam = searchParams.get('q');
-    if (sParam) {
-      setSearchQuery(sParam);
-    } else if (qParam) {
-      setSearchQuery(qParam);
-    }
+    setSearchQuery(sParam || qParam || '');
+    setSelectedCategory('All Pujas');
+    setBookingPuja(null);
+    setBookingSubmitted(false);
     const cParam = searchParams.get('city');
     if (cParam) {
       setBookingCity(cParam);

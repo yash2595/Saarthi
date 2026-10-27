@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X } from 'lucide-react';
@@ -12,6 +12,7 @@ import { SaarthiNavigationPanel } from './SaarthiNavigationPanel';
 export const SaarthiController: React.FC = () => {
   const { isTtsPlaying, ttsPlaybackId, isGreetingTtsSpeaking, error, isSessionReady } = useSaarthiVoice();
   const [navigationOpen, setNavigationOpen] = useState(false);
+  const closeNavigation = useCallback(() => setNavigationOpen(false), []);
   const location = useLocation();
 
   useEffect(() => {
@@ -130,7 +131,7 @@ export const SaarthiController: React.FC = () => {
 
         </motion.div>
       )}
-      <SaarthiNavigationPanel open={navigationOpen} onOpen={openTextNavigation} onClose={() => setNavigationOpen(false)} voiceError={error} voiceReady={isSessionReady} />
+      <SaarthiNavigationPanel open={navigationOpen} onOpen={openTextNavigation} onClose={closeNavigation} voiceError={error} voiceReady={isSessionReady} />
     </>
   );
 };

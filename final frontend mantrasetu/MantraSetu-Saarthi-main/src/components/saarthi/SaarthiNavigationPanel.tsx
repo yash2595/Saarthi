@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useNavigationType } from 'react-router-dom';
 import { MessageCircle, Send, X } from 'lucide-react';
 import { normalizeNavigationTarget, resolveNavigationMessage, type Destination } from '@/lib/conversation-navigation';
+import { canGoBack, recordNavigation, type NavigationHistory } from '@/lib/navigation-history';
+import { useAuth } from '@/contexts/AuthContext';
 import './navigation-panel.css';
 
 type Message = { role: 'user' | 'assistant'; text: string };
@@ -10,8 +12,10 @@ type Props = { open: boolean; onOpen: () => void; onClose: () => void; voiceErro
 export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voiceReady }: Props) {
   const navigate = useNavigate();
   const location = useLocation();
+  const navigationType = useNavigationType();
+  const { isAuthenticated } = useAuth();
   const currentPath = location.pathname + location.search + location.hash;
-  const history = useRef([currentPath]);
+  const history = useRef<NavigationHistory>({ entries: [{ key: location.key, path: currentPath }], index: 0 });
   const requestedScroll = useRef(false);
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState<Destination[]>([]);
@@ -21,7 +25,7 @@ export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voic
   const log = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (history.current.at(-1) !== currentPath) history.current = [...history.current, currentPath].slice(-30);
+    history.current = recordNavigation(history.current, { key: location.key, path: currentPath }, navigationType);
     if (!requestedScroll.current) return;
     requestedScroll.current = false;
     const section = location.hash.slice(1);
@@ -35,15 +39,24 @@ export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voic
       const top = target && (location.pathname !== '/' || section)
         ? Math.max(0, target.getBoundingClientRect().top + window.scrollY - 88) : 0;
       window.scrollTo({ top, behavior: 'smooth' });
+      if (window.matchMedia('(max-width: 640px)').matches) {
+        onClose();
+        if (target instanceof HTMLElement) { target.tabIndex = -1; target.focus({ preventScroll: true }); }
+      }
     });
     return () => cancelAnimationFrame(frame);
-  }, [currentPath, location.hash, location.pathname, location.key]);
+  }, [currentPath, location.hash, location.pathname, location.key, navigationType, onClose]);
 
   useEffect(() => { if (open) input.current?.focus({ preventScroll: true }); }, [open]);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [messages, open]);
 
   function close() { onClose(); requestAnimationFrame(() => launcher.current?.focus({ preventScroll: true })); }
-  function navigateTo(path: string) { requestedScroll.current = true; navigate(path); }
+  function navigateTo(path: string) {
+    const destination = path === '/dashboard' && !isAuthenticated ? '/login' : path;
+    requestedScroll.current = true;
+    navigate(destination, { replace: destination === currentPath, state: { saarthiNavigation: true } });
+    return destination;
+  }
   function send(message: string) {
     const text = message.trim().slice(0, 500);
     if (!text) return;
@@ -52,14 +65,13 @@ export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voic
     if (reply.kind === 'navigate' && reply.destination) {
       const path = normalizeNavigationTarget(reply.destination.path);
       if (path) {
-        navigateTo(path);
-        if (path === '/dashboard') response = 'My account khol raha hoon. Sign in nahi kiya hai to pehle Login page dikhega.';
+        const actualPath = navigateTo(path);
+        if (path === '/dashboard' && actualPath === '/login') response = 'Account dekhne ke liye pehle sign in kijiye. Login page khol diya.';
       }
     } else if (reply.kind === 'back') {
-      if (history.current.length > 1) {
-        const previous = history.current.at(-2)!;
-        history.current = history.current.slice(0, -2);
-        navigateTo(previous);
+      if (canGoBack(history.current)) {
+        requestedScroll.current = true;
+        navigate(-1);
       } else response = 'Is session mein abhi koi pichhla page nahi hai. Kaunsa page kholun?';
     }
     setPending(reply.choices || []);
@@ -95,6 +107,7 @@ export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voic
             setMessages(previous => [...previous, { role: 'user' as const, text: choice.label }, { role: 'assistant' as const, text: `${choice.label} khol diya.` }].slice(-24));
           }}>{choice.label}</button>)}
       </div>
+      <button type="button" className="saarthi-nav-view-page" onClick={close}>Page dekhein · chat band karein</button>
       <form className="saarthi-nav-form" onSubmit={event => { event.preventDefault(); send(draft); }}>
         <label className="saarthi-nav-sr" htmlFor="saarthi-navigation-message">Saarthi ko message</label>
         <input ref={input} id="saarthi-navigation-message" name="navigation-message" value={draft}

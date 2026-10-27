@@ -11,4 +11,7 @@
 .saarthi-nav-panel button:focus-visible,.saarthi-nav-launcher:focus-visible,.saarthi-nav-form input:focus-visible{outline:3px solid #c46a24;outline-offset:2px}
 .saarthi-nav-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .saarthi-nav-header,.saarthi-nav-note,.saarthi-nav-voice-status,.saarthi-nav-choices,.saarthi-nav-form{flex-shrink:0}
+.saarthi-nav-panel{overflow:clip;overflow-anchor:none}
+.saarthi-nav-log{min-height:0;flex-shrink:1;overflow-anchor:none}
+.saarthi-nav-message{flex-shrink:0}
 @media(max-width:480px){.saarthi-nav-panel{right:14px;bottom:14px}.saarthi-nav-launcher{right:14px;bottom:18px;padding:11px 13px;font-size:12px}}

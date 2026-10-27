@@ -39,10 +39,10 @@ export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voic
     return () => cancelAnimationFrame(frame);
   }, [currentPath, location.hash, location.pathname, location.key]);
 
-  useEffect(() => { if (open) input.current?.focus(); }, [open]);
+  useEffect(() => { if (open) input.current?.focus({ preventScroll: true }); }, [open]);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [messages, open]);
 
-  function close() { onClose(); requestAnimationFrame(() => launcher.current?.focus()); }
+  function close() { onClose(); requestAnimationFrame(() => launcher.current?.focus({ preventScroll: true })); }
   function navigateTo(path: string) { requestedScroll.current = true; navigate(path); }
   function send(message: string) {
     const text = message.trim().slice(0, 500);
@@ -65,7 +65,7 @@ export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voic
     setPending(reply.choices || []);
     setMessages(previous => [...previous, { role: 'user' as const, text }, { role: 'assistant' as const, text: response }].slice(-24));
     setDraft('');
-    input.current?.focus();
+    input.current?.focus({ preventScroll: true });
   }
 
   return <>

@@ -107,21 +107,12 @@ export const SaarthiProvider: React.FC<SaarthiProviderProps> = ({ children }) =>
 
   // ── MINIMIZE / STEP-ASIDE CONTROL (Sequence Refined) ─────────
   const minimizeSaarthi = useCallback(() => {
-    console.trace('[Provider] minimizeSaarthi invoked');
-    // 1. Speech bubble & popup fade out (180ms)
+    // Docking is visual only. Resetting the shared audio state to idle here
+    // prevents the microphone pipeline from sending any later user speech.
     setShowChoicePopup(false);
     setShowSpeechBubble(false);
-
-    // 2. 100ms pause -> 3. Gentle 8-10° bow gesture -> 4. Move to bottom-right
-    setTimeout(() => {
-      setState('greeting'); // Gentle bow
-      setTimeout(() => {
-        setIsMinimized(true);
-        setState('idle');
-        setOnboardingPhase('minimized');
-        setDialogueText('');
-      }, 500);
-    }, 280); // 180ms fade + 100ms pause
+    setIsMinimized(true);
+    setOnboardingPhase('minimized');
   }, []);
 
   // ── FORCE MINIMIZE (Instant, for AI Interactions) ─────────

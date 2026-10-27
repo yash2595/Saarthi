@@ -5,6 +5,7 @@ import { recordNavigation, canGoBack, type NavigationHistory } from '../lib/navi
 import { getPersistableData } from '../utils/formSecurity';
 import apiClient from '../api/api';
 import { voiceTicketErrorMessage } from '../lib/voice-session-status';
+import { unlockVoiceAudio } from '../lib/voice-audio-context';
 import { isPanditNavigation, normalizeNavigationTarget, isGreetingOnlyResponse } from '../lib/conversation-navigation';
 
 /** Shared sanitization helper to guarantee no passwords/credentials enter sessionStorage */
@@ -551,17 +552,20 @@ export function useSaarthiVoice() {
   const enableVoice = useCallback(() => {
     console.log('[Voice] Enabling voice subsystem');
     if (error) disableVoice();
-    // Unlock playback in the user's click, before any ticket/provider awaits.
-    // Creating this only when the first audio frame arrives loses browser activation.
+    // Unlock both graphs in this click. A capture context created after the
+    // network handshake can stay suspended even when greeting playback works.
     try {
-      if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-        const AudioContextType = window.AudioContext || (window as any).webkitAudioContext;
-        audioContextRef.current = new AudioContextType({ sampleRate: 24000 });
-        (window as any)._saarthiAudioContext = audioContextRef.current;
-      }
-      void audioContextRef.current?.resume();
+      const AudioContextType = window.AudioContext || (window as any).webkitAudioContext;
+      const contexts = unlockVoiceAudio<AudioContext>(
+        audioContextRef.current, micAudioCtxRef.current,
+        sampleRate => new AudioContextType(sampleRate ? { sampleRate } : undefined),
+        () => setError('Audio shuru nahi ho paaya. Dobara connect karein.'),
+      );
+      audioContextRef.current = contexts.playback;
+      micAudioCtxRef.current = contexts.capture;
+      (window as any)._saarthiAudioContext = contexts.playback;
     } catch {
-      setError('Is browser mein audio playback shuru nahi ho paaya.');
+      setError('Is browser mein audio shuru nahi ho paaya.');
       return;
     }
     if (!isVoiceEnabledRef.current) reconnectAttemptsRef.current = 0;
@@ -3126,15 +3130,20 @@ export function useSaarthiVoice() {
         // playback context so microphone nodes can never reach the speaker graph. Requesting
         // 16000Hz natively also lets the browser do high-quality resampling for us instead of
         // our crude 24k -> 16k decimation, which was garbling transcriptions.
-        let micAudioCtx: AudioContext;
-        try {
-          micAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-        } catch (e) {
-          micAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        // Reuse the context unlocked in the user's click; do not replace it
+        // with a fresh, suspended context after getUserMedia resolves.
+        let micAudioCtx = micAudioCtxRef.current;
+        if (!micAudioCtx || micAudioCtx.state === 'closed') {
+          try {
+            micAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+          } catch {
+            micAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+          }
+          micAudioCtxRef.current = micAudioCtx;
         }
-        micAudioCtxRef.current = micAudioCtx;
+        if (!micAudioCtx) throw new Error('Microphone audio context unavailable');
         if (micAudioCtx.state === 'suspended') {
-          micAudioCtx.resume().then(() => console.log('[Voice] Mic AudioContext resumed for persistent mic input')).catch(() => {});
+          void micAudioCtx.resume().catch(() => setError('Microphone audio shuru nahi ho paaya. Dobara connect karein.'));
         }
         console.log(`[Voice] Mic capture AudioContext sampleRate: ${micAudioCtx.sampleRate}Hz (target 16000Hz)`);
 

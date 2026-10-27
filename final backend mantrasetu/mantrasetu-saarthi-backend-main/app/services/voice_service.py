@@ -96,16 +96,19 @@ async def handle_voice_proxy(websocket: WebSocket, query_str: str):
             if status_code is None and hasattr(e, "response"):
                 status_code = getattr(e.response, "status_code", None)
             err_msg = str(e)
-            if status_code in (403, 429) or "403" in err_msg or "429" in err_msg or "rate limit" in err_msg.lower():
+            if status_code == 429 or "rate limit" in err_msg.lower():
                 close_code = 1008
-                close_reason = "Rate limit exceeded (403 Forbidden). Bahut zyada attempts ho gaye hain, kripya thodi der baad try karein."
+                close_reason = "Rate limit exceeded. Kripya thodi der baad try karein."
+            elif status_code == 403:
+                close_code = 1013
+                close_reason = "AI voice service is unavailable or rejected the connection."
             else:
                 close_code = 1011
                 close_reason = "AI Service connection failed. Please try again shortly."
 
     finally:
         try:
-            is_rate_limited = close_code == 1008 or "rate limit" in (close_reason or "").lower() or "403" in (close_reason or "").lower()
+            is_rate_limited = any(phrase in (close_reason or '').lower() for phrase in ('rate limit', 'session limit', 'too many', 'bahut zyada'))
             if is_rate_limited or close_code != 1000:
                 try:
                     await websocket.send_json({

@@ -236,3 +236,43 @@ def test_pandit_application_review_and_directory(client):
     directory = http.get('/pandit/list').json()
     assert any(item['id'] == identifier for item in directory)
     assert not any('hashed_password' in item or 'email' in item for item in directory)
+
+
+@pytest.mark.parametrize('status,body,expected', [(200, {'healthy': True}, 200),
+    (503, {'status': 'configuration_required'}, 503), (500, {}, 503)])
+def test_voice_ticket_waits_for_actual_ai_readiness(client, status, body, expected):
+    import httpx
+    from app.api.routes import voice
+    session = AsyncMock()
+    session.__aenter__.return_value = session
+    session.get.return_value = httpx.Response(status, json=body)
+    with patch.object(voice.httpx, 'AsyncClient', return_value=session):
+        response = client[0].post('/voice/ticket')
+    assert response.status_code == expected
+    assert ('ticket' in response.json()) is (expected == 200)
+    if body.get('status') == 'configuration_required':
+        assert response.json()['status'] == 'configuration_required'
+    assert session.get.call_args.args[0].endswith('/health')
+
+
+def test_voice_ticket_timeout_is_not_a_rate_limit(client):
+    import httpx
+    from app.api.routes import voice
+    session = AsyncMock()
+    session.__aenter__.return_value = session
+    session.get.side_effect = httpx.ReadTimeout('synthetic timeout')
+    with patch.object(voice.httpx, 'AsyncClient', return_value=session):
+        response = client[0].post('/voice/ticket')
+    assert response.status_code == 503 and response.json()['status'] == 'service_unavailable'
+
+
+@pytest.mark.parametrize('status,code', [(403, 'UPSTREAM_ERROR'), (429, 'RATE_LIMIT_EXCEEDED'), (500, 'UPSTREAM_ERROR')])
+def test_voice_proxy_does_not_label_every_rejection_as_a_rate_limit(client, status, code):
+    from app.services import voice_service
+    class UpstreamFailure(Exception):
+        status_code = status
+    with patch.object(voice_service.websockets, 'connect', side_effect=UpstreamFailure('synthetic failure')):
+        with client[0].websocket_connect('/ws/voice') as socket:
+            response = socket.receive_json()
+            assert response['type'] == 'ERROR'
+            assert response['payload']['code'] == code

@@ -5,6 +5,8 @@ from app.services.security import create_voice_ticket, decode_access_token
 from app.services.voice_service import handle_voice_proxy
 from jose import JWTError
 import logging
+import httpx
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,21 @@ async def generate_voice_ticket(
     - Authenticated users (with valid Bearer token) receive an 'authenticated' ticket with user_id.
     - Guest users (missing or invalid token) receive a signed 'guest' ticket.
     """
+    base_url = settings.AI_SERVICE_URL.rstrip('/')
+    if base_url.endswith('/api/v1'):
+        base_url = base_url[:-7]
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            readiness = await client.get(base_url + '/health')
+        if readiness.status_code != 200:
+            try:
+                incomplete = readiness.json().get('status') == 'configuration_required'
+            except ValueError:
+                incomplete = False
+            return JSONResponse({'status': 'configuration_required' if incomplete else 'service_unavailable',
+                                 'detail': 'Voice service is not ready'}, status_code=503)
+    except httpx.HTTPError:
+        return JSONResponse({'status': 'service_unavailable', 'detail': 'Voice service could not be reached'}, status_code=503)
     user_id = None
     role = "guest"
     client_ip = request.client.host if request.client else ""

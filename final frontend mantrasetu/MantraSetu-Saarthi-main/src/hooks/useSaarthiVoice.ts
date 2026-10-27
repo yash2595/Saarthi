@@ -1531,7 +1531,6 @@ export function useSaarthiVoice() {
              const isRateLimitErr =
                errCode === 'RATE_LIMIT_EXCEEDED' ||
                errMsg.toLowerCase().includes('rate limit') ||
-               errMsg.toLowerCase().includes('403') ||
                errMsg.includes('Bahut zyada attempts');
 
              if (isRateLimitErr) {
@@ -2695,9 +2694,8 @@ export function useSaarthiVoice() {
       const reasonLower = (event.reason || '').toLowerCase();
       const isRateLimit =
         isRateLimitedRef.current ||
-        (event.code === 1008 && (reasonLower.includes('rate limit') || reasonLower.includes('403') || reasonLower.includes('attempt') || event.reason.includes('Bahut zyada') || reasonLower.includes('session'))) ||
+        (event.code === 1008 && (reasonLower.includes('rate limit') || reasonLower.includes('session limit') || event.reason.includes('Bahut zyada'))) ||
         reasonLower.includes('rate limit') ||
-        reasonLower.includes('403') ||
         event.reason.includes('Bahut zyada attempts');
 
       if (isRateLimit) {
@@ -3064,7 +3062,7 @@ export function useSaarthiVoice() {
 
   useEffect(() => {
     console.log('[Voice] mic useEffect triggered | isConnected:', isConnected, '| micStreamActive:', !!(micStreamRef.current && micStreamRef.current.active));
-    if (!isConnected || !isVoiceEnabledRef.current) return;
+    if (!isConnected || !isSessionReady || !isVoiceEnabledRef.current) return;
     const micAttempt = connectionAttemptRef.current;
     if (!navigator.mediaDevices?.getUserMedia) {
       setError('Is browser mein microphone available nahi hai. HTTPS par supported browser use karein.');
@@ -3499,7 +3497,7 @@ export function useSaarthiVoice() {
         console.log('[Voice] Component re-render/remount detected. Preserving active microphone stream & VAD context.');
       }
     };
-  }, [isConnected]);
+  }, [isConnected, isSessionReady]);
 
   const stopSpeaking = useCallback(() => {
     console.log('[Voice] Barge-in / Stop requested. Halting speech.');

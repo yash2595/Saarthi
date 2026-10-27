@@ -583,15 +583,7 @@ export function useSaarthiVoice() {
 
 
   useEffect(() => {
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
-        .then(() => {
-          console.log('[MIC] Permission granted, ready');
-        })
-        .catch(err => {
-          console.error('[MIC] Permission denied:', err);
-        });
-    }
+    if (!import.meta.env.DEV) return;
 
     (window as any).simulateUserSpeech = (text: string, customField?: string) => {
       console.log(`[DEBUG-SIMULATION] Simulating user speech: "${text}"`);
@@ -3041,7 +3033,7 @@ export function useSaarthiVoice() {
 
   useEffect(() => {
     console.log('[Voice] mic useEffect triggered | isConnected:', isConnected, '| micStreamActive:', !!(micStreamRef.current && micStreamRef.current.active));
-    if (!isConnected) return;
+    if (!isConnected || !isVoiceEnabledRef.current) return;
 
     if (micStreamRef.current && micStreamRef.current.active && processorRef.current) {
       console.log('[Voice] Persistent microphone stream is ALREADY active. Preserving active stream.');
@@ -3059,6 +3051,10 @@ export function useSaarthiVoice() {
       } as MediaTrackConstraints
     })
       .then(stream => {
+        if (!isVoiceEnabledRef.current || wsRef.current?.readyState !== WebSocket.OPEN) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
         micStreamRef.current = stream;
         console.log('[Voice] Persistent Microphone permission granted & stream active');
 
@@ -3431,7 +3427,7 @@ export function useSaarthiVoice() {
       })
       .catch(err => {
         console.error('[Voice] Persistent Microphone error', err);
-        setError('Could not access microphone');
+        if (isVoiceEnabledRef.current) setError('Could not access microphone');
         setSaarthiState('idle');
       });
 

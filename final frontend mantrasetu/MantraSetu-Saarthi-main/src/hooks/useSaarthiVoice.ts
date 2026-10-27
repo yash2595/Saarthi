@@ -311,7 +311,7 @@ function getGreetingIntroRatio(text: string): number {
 }
 
 export function useSaarthiVoice() {
-  const { state, setDialogueText, setSaarthiState, forceMinimize, announceMessage, setNeedsRepeat } = useSaarthi();
+  const { state, setDialogueText, setSaarthiState, forceMinimize: minimizeFromContext, announceMessage, setNeedsRepeat } = useSaarthi();
   
   // Track request IDs to drop late responses from abandoned requests
   const currentRequestIdRef = useRef<string>('');
@@ -320,6 +320,11 @@ export function useSaarthiVoice() {
   const [isConnected, setIsConnected] = useState(false);
   const [isSessionReady, setIsSessionReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const voiceErrorRef = useRef<string | null>(null);
+  useEffect(() => { voiceErrorRef.current = error; }, [error]);
+  const forceMinimize = useCallback(() => {
+    if (!voiceErrorRef.current) minimizeFromContext();
+  }, [minimizeFromContext]);
   const [isVoiceEnabled, setIsVoiceEnabled] = useState(false);
   const [isMicrophoneReady, setIsMicrophoneReady] = useState(false);
   const connectionAttemptRef = useRef(0);
@@ -545,6 +550,7 @@ export function useSaarthiVoice() {
 
   const enableVoice = useCallback(() => {
     console.log('[Voice] Enabling voice subsystem');
+    if (error) disableVoice();
     // Unlock playback in the user's click, before any ticket/provider awaits.
     // Creating this only when the first audio frame arrives loses browser activation.
     try {
@@ -565,7 +571,7 @@ export function useSaarthiVoice() {
     if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
       connectWebSocketRef.current();
     }
-  }, []);
+  }, [disableVoice, error]);
 
   const sendWsMessage = useCallback((payload: any): boolean => {
     const currentWs = wsRef.current;

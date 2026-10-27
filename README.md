@@ -10,15 +10,15 @@ A React and FastAPI project for discovering puja services, registering pandits, 
 
 | Area | Implementation and verification |
 | --- | --- |
-| Voice conversation | WebSocket transport, microphone capture, STT adapters, navigation orchestrator and streamed TTS. Automated tests use mocked cloud providers. Real microphone-to-provider-to-speaker production acceptance is pending credentials. |
-| Authentication | Bcrypt password hashing, signed access tokens, signup/login, profile identity and expiring email verification. Verified against disposable local MongoDB. |
-| Pandit onboarding | Multipart registration, draft resume capabilities expiring after seven days, private documents, admin review and approved-only public directory. Verified locally; production MongoDB is pending. |
+| Voice conversation | WebSocket transport, microphone capture, STT adapters, navigation orchestrator and streamed TTS. Automated contracts use mocked providers; separate real InWorld STT/TTS and Groq checks also pass. Browser microphone permission is required for a conversation on the user’s device. |
+| Authentication | Bcrypt password hashing, signed access tokens, signup/login, profile identity and expiring email verification. Verified against disposable local MongoDB; the deployed database is connected. |
+| Pandit onboarding | Multipart registration, draft resume capabilities expiring after seven days, private documents, admin review and approved-only public directory. Verified locally; production MongoDB is connected. Real document storage still requires a durable storage setup. |
 | Booking | Validated request creation and owner-scoped history. A request is **not a confirmed pandit assignment**. No payment, availability or fulfillment integration is implemented. |
 | Kundali | Birth-detail capture/storage and frontend validation. A real astronomical chart calculation is **not implemented**. |
 | Muhurat | Sample timings are explicitly labelled; this is **not an astronomical calculation service**. |
 | Email | Optional HTTPS Resend delivery or bounded SMTP fallback. Missing configuration returns delivery failure rather than claiming an email was sent. Real delivery requires a provider and verified sender. |
 
-The current deployment intentionally returns `503 configuration_required` for features awaiting MongoDB, Groq or InWorld credentials. A live landing page does not mean the complete voice pipeline is ready. Process health and dependency readiness are separate.
+The backend and AI services now have matching database/voice configuration and real provider keys. AI `/health` verifies MongoDB and orchestrator readiness. Missing configuration still returns `503 configuration_required`; process health and dependency readiness remain separate. The current live catalog is empty, so frontend preview cards do not establish real availability.
 
 ## Architecture
 
@@ -74,6 +74,8 @@ VOICE_TICKET_SECRET=<same-voice-secret-as-backend>
 GROQ_API_KEY=<real-provider-key>
 INWORLD_API_KEY=<real-provider-key>
 LLM_PROVIDER=groq
+GROQ_LLM_MODEL=openai/gpt-oss-20b
+PREWARM_TTS_CACHE=false
 CORS_ORIGINS=http://localhost:5173
 API_BASE_URL=http://localhost:8000
 MAIN_BACKEND_URL=http://localhost:8000
@@ -130,7 +132,7 @@ The AI suite exercises real WebSocket JSON framing, role-aware greetings, naviga
 
 See [deployment/README.md](deployment/README.md). Vercel hosts the frontend; Render hosts the two server applications. Backend `/health` and AI `/live` test process availability. Backend `/ready` and AI `/health` test readiness.
 
-Free Render instances can sleep and lose uploaded local files on restart/redeploy. Durable document storage is required before accepting real identity documents. Configure matching Atlas database names, network access, provider credentials and an email sender, then repeat real-browser voice and account flows before a production demonstration.
+Free Render instances can sleep and lose uploaded local files on restart/redeploy. Durable document storage is required before accepting real identity documents. The deployed services share an Atlas database name and voice ticket secret. Groq uses an available `openai/gpt-oss-20b` model with a reasoning-aware output budget. TTS cache pre-generation is optional to avoid generating every prompt on each restart. Complete browser microphone, email-sender and account-flow acceptance before a production demonstration.
 
 Demo auth/booking/calculation stubs in the AI service are disabled by default and cannot be enabled on Render. The production backend remains the authoritative account/booking service.
 

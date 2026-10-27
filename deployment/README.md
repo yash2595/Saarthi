@@ -12,11 +12,11 @@ Build: `pip install torch --index-url https://download.pytorch.org/whl/cpu && pi
 Start: `python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
 Process health: `/live`; full readiness: `/health`.
 
-## Complete configuration later
+## Configuration status
 
-The owner requested to add provider credentials and MongoDB later. The services remain reachable and return HTTP 503 `configuration_required` for unavailable features. No fake provider keys or database were added.
+MongoDB, Groq and InWorld values are now configured on the AI service as well as the backend. AI health and MongoDB readiness return success. Real InWorld STT/TTS and Groq requests have been checked with synthetic test data. No secret values are committed. Browser microphone permission and a verified email sender still need environment-specific acceptance.
 
-Set these variables in Render, then deploy both services:
+For a fresh environment, set these variables in Render, then deploy both services:
 
 | Variable | Backend | AI |
 | --- | --- | --- |
@@ -57,3 +57,5 @@ Draft capabilities expire after seven days and accept only supported non-passwor
 ## CI and acceptance
 
 Install `deployment/requirements-test.txt`, run `deployment/run_ai_checks.py`, the backend `tests/test_security_contract.py` suite and `deployment/test_startup.py`. The AI runner uses mocked provider contracts and real local WebSocket framing. Actual cloud speech acceptance is still required after credentials are configured.
+
+The deployed AI uses `GROQ_LLM_MODEL=openai/gpt-oss-20b`. `PREWARM_TTS_CACHE=false` keeps startup from generating all static audio prompts; normal audio generation and caching happen on demand. A denied microphone must remain visible in the UI and can be retried after the browser permission is enabled.

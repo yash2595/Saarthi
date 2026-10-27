@@ -69,6 +69,16 @@ export const SaarthiProvider: React.FC<SaarthiProviderProps> = ({ children }) =>
     }, 280); // 180ms fade + 100ms pause
   }, [disableVoice]);
 
+  const continueByText = useCallback(() => {
+    disableVoice();
+    setShowChoicePopup(false);
+    setShowSpeechBubble(false);
+    setIsMinimized(true);
+    setOnboardingPhase('minimized');
+    setState('idle');
+    setDialogueText('');
+  }, [disableVoice]);
+
   // ── USER CHOICE 2: Continue with Saarthi ────────────────────
   const continueWithSaarthi = useCallback(() => {
     console.log('[Provider] continueWithSaarthi invoked, enabling voice');
@@ -205,6 +215,7 @@ export const SaarthiProvider: React.FC<SaarthiProviderProps> = ({ children }) =>
         showSpeechBubble,
 
         continueWithSaarthi,
+        continueByText,
         continueManually,
         minimizeSaarthi,
         forceMinimize,

@@ -3,6 +3,7 @@ import { useSaarthi } from '../components/saarthi/SaarthiContext';
 import { useNavigate } from 'react-router-dom';
 import { getPersistableData } from '../utils/formSecurity';
 import apiClient from '../api/api';
+import { isPanditNavigation, normalizeNavigationTarget } from '../lib/conversation-navigation';
 
 /** Shared sanitization helper to guarantee no passwords/credentials enter sessionStorage */
 export function persistVoiceState(data: Record<string, any>) {
@@ -324,7 +325,7 @@ export function useSaarthiVoice() {
   // Push-to-talk state removed for revert
 
 
-  const isVoiceEnabledRef = useRef<boolean>(true);
+  const isVoiceEnabledRef = useRef<boolean>(false);
   const isTtsPlayingRef = useRef(false);
   const greetingPlaybackRef = useRef({
     active: false,
@@ -448,6 +449,7 @@ export function useSaarthiVoice() {
   const disableVoice = useCallback(() => {
     console.log('[Voice] Disabling voice subsystem: stopping mic, closing WS, purging audio queue');
     isVoiceEnabledRef.current = false;
+    isConnectingRef.current = false;
     setIsConnected(false);
     updateSessionReady(false);
 
@@ -536,6 +538,7 @@ export function useSaarthiVoice() {
   const enableVoice = useCallback(() => {
     console.log('[Voice] Enabling voice subsystem');
     isVoiceEnabledRef.current = true;
+    setError(null);
     if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
       connectWebSocketRef.current();
     }
@@ -967,7 +970,8 @@ export function useSaarthiVoice() {
       // Hide cursor on page navigation to prevent floating cursor during load
       cursor.style.opacity = '0';
       isNavigatingRef.current = true;
-      navigate(step.path);
+      const safePath = normalizeNavigationTarget(step.path);
+      if (safePath) navigate(safePath);
       setTimeout(() => {
         isNavigatingRef.current = false;
         processNextStep();
@@ -1388,12 +1392,13 @@ export function useSaarthiVoice() {
     try {
       console.log('[Voice] Fetching ephemeral voice ticket from backend (/voice/ticket)...');
       const ticketRes = await apiClient.post('/voice/ticket');
+      if (!isVoiceEnabledRef.current) { isConnectingRef.current = false; return; }
       ticket = ticketRes.data?.ticket;
       console.log('[Voice] Voice ticket obtained successfully, type:', ticketRes.data?.type);
     } catch (ticketErr: any) {
       console.error('[Voice] Failed to obtain voice ticket from backend:', ticketErr);
       isConnectingRef.current = false;
-      setError('Voice service abhi available nahi hai. Kripya thodi der baad koshish karein.');
+      if (isVoiceEnabledRef.current) setError('Voice service abhi available nahi hai. Kripya thodi der baad koshish karein.');
       return;
     }
 
@@ -1796,9 +1801,7 @@ export function useSaarthiVoice() {
             console.log('[Voice] Query:', query);
 
             // 🚨 PANDIT ONBOARDING ROUTE CHECK: Ensure frontend navigates to /signup?role=pandit
-            const isPanditOnboardingIntent = intent === 'PANDIT_ONBOARDING' ||
-              (typeof target === 'string' && (target.includes('/signup') || target.includes('/sign-up') || target.includes('pandit'))) ||
-              (typeof activeField === 'string' && activeField.startsWith('pandit-'));
+            const isPanditOnboardingIntent = isPanditNavigation(intent, target, activeField);
 
             if (isPanditOnboardingIntent && !window.location.pathname.startsWith('/signup') && !window.location.pathname.startsWith('/sign-up')) {
               console.log(`[PANDIT-NAV] Auto-navigating to Pandit onboarding route (/signup?role=pandit) for intent: ${intent}`);
@@ -1864,7 +1867,11 @@ export function useSaarthiVoice() {
 
             if (action === 'NAVIGATE' && target) {
 
-              const cleanTarget = target.trim();
+              const cleanTarget = normalizeNavigationTarget(target);
+              if (!cleanTarget) {
+                setDialogueText('Yeh page available nahi hai. Puja, Kundali, Muhurat ya Login bataiye.');
+                return;
+              }
               const intentName = msg.payload?.intent || '';
               console.log(`[NAV-DEBUG] Routing for target: ${cleanTarget}, query: ${query}, intent: ${intentName}, currentPath: ${window.location.pathname}`);
               
@@ -1898,7 +1905,8 @@ export function useSaarthiVoice() {
                  seq.push({ action: 'wait_for_selector', target: '[data-testid^="card-puja-"], .service-card', delay: 400 });
                  seq.push({ action: 'scroll', target: '[data-testid^="card-puja-"], .service-card', delay: 400 });
                  seq.push({ action: 'move', target: '[data-testid^="button-book-now-"], .service-card button', delay: 800 });
-                 seq.push({ action: 'click', target: '[data-testid^="button-book-now-"], .service-card button', delay: 400 });
+                 // The catalog opens a form only for a unique service title match.
+                 // Never click the first search result: descriptions can match a different puja.
                  runSequence(seq);
                  return;
               }
@@ -1914,6 +1922,11 @@ export function useSaarthiVoice() {
 
               // 3. Auto-scroll past repetitive hero banners to reveal distinct page content
               setTimeout(() => {
+                const hash = cleanTarget.split('#')[1];
+                if (hash) {
+                  document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  return;
+                }
                 if (cleanTarget === '/' || cleanTarget === '') {
                   window.scrollTo({ top: 0, behavior: 'smooth' });
                   return;
@@ -2007,7 +2020,7 @@ export function useSaarthiVoice() {
                                     window.location.search.includes('role=pandit') ||
                                     !!document.querySelector('[data-testid="input-pandit-first-name"], [data-testid="pandit-wizard-step"], [data-testid="pill-group-pandit-gender"]');
 
-                if (window.location.pathname.includes('signup') && (window.location.search.includes('role=pandit') || document.querySelector('[data-testid="input-pandit-first-name"]'))) {
+                if (/^\/sign-?up$/.test(window.location.pathname) && (window.location.search.includes('role=pandit') || document.querySelector('[data-testid="input-pandit-first-name"]'))) {
                    isPanditField = true;
                 }
 
@@ -2280,7 +2293,7 @@ export function useSaarthiVoice() {
                 }
               }
 
-              const isPanditActive = activeField?.startsWith('pandit-') || window.location.pathname.includes('signup');
+              const isPanditActive = activeField?.startsWith('pandit-') || (/^\/sign-?up$/.test(window.location.pathname) && window.location.search.includes('role=pandit'));
               if (activeField && isPanditActive) {
                 const step2Fields = ['exp', 'gurukul', 'education', 'spec', 'lang', 'achievements', 'bio'];
                 const step3Fields = ['certfile', 'aadhaarfile', 'galleryfiles', 'password', 'confirm', 'codeofconduct', 'conduct', 'terms'];

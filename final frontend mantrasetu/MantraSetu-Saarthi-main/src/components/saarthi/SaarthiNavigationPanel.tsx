@@ -1,0 +1,95 @@
+import { useEffect, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { MessageCircle, Send, X } from 'lucide-react';
+import { normalizeNavigationTarget, resolveNavigationMessage, type Destination } from '@/lib/conversation-navigation';
+import './navigation-panel.css';
+
+type Message = { role: 'user' | 'assistant'; text: string };
+type Props = { open: boolean; onOpen: () => void; onClose: () => void; voiceError: string | null; voiceReady: boolean };
+
+export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voiceReady }: Props) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const currentPath = location.pathname + location.search + location.hash;
+  const history = useRef([currentPath]);
+  const [draft, setDraft] = useState('');
+  const [pending, setPending] = useState<Destination[]>([]);
+  const [messages, setMessages] = useState<Message[]>([{ role: 'assistant', text: 'Namaste! Kaunsa page kholun? “Puja dikhao”, “Kundali banao” ya “Pandit registration” likhiye. Hindi mein bhi likh sakte hain.' }]);
+  const input = useRef<HTMLInputElement>(null);
+  const launcher = useRef<HTMLButtonElement>(null);
+  const log = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (history.current.at(-1) !== currentPath) history.current = [...history.current, currentPath].slice(-30);
+    const section = location.hash.slice(1);
+    const frame = requestAnimationFrame(() => {
+      if (section) document.getElementById(section)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [currentPath, location.hash]);
+
+  useEffect(() => { if (open) input.current?.focus(); }, [open]);
+  useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [messages, open]);
+
+  function close() { onClose(); requestAnimationFrame(() => launcher.current?.focus()); }
+  function send(message: string) {
+    const text = message.trim().slice(0, 500);
+    if (!text) return;
+    const reply = resolveNavigationMessage(text, pending);
+    let response = reply.text;
+    if (reply.kind === 'navigate' && reply.destination) {
+      const path = normalizeNavigationTarget(reply.destination.path);
+      if (path) {
+        navigate(path);
+        if (path === '/dashboard') response = 'My account khol raha hoon. Sign in nahi kiya hai to pehle Login page dikhega.';
+      }
+    } else if (reply.kind === 'back') {
+      if (history.current.length > 1) {
+        const previous = history.current.at(-2)!;
+        history.current = history.current.slice(0, -2);
+        navigate(previous);
+      } else response = 'Is session mein abhi koi pichhla page nahi hai. Kaunsa page kholun?';
+    }
+    setPending(reply.choices || []);
+    setMessages(previous => [...previous, { role: 'user' as const, text }, { role: 'assistant' as const, text: response }].slice(-24));
+    setDraft('');
+    input.current?.focus();
+  }
+
+  return <>
+    {!open && <button ref={launcher} className="saarthi-nav-launcher" type="button" onClick={onOpen}
+      aria-label="Saarthi se likhkar baat karein" aria-expanded={false} aria-controls="saarthi-navigation-panel">
+      <MessageCircle size={19} /> <span>Saarthi se baat karein</span>
+    </button>}
+    {open && <section id="saarthi-navigation-panel" className="saarthi-nav-panel" aria-label="Saarthi page assistant"
+      onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); close(); } }}>
+      <header className="saarthi-nav-header"><div><strong>Saarthi</strong><p>Likhkar page kholen · Hindi / Hinglish / English</p></div>
+        <button type="button" onClick={close} aria-label="Close Saarthi conversation"><X size={20} /></button>
+      </header>
+      <p className="saarthi-nav-note">Yahan page navigation hota hai. Booking aur form submit aap khud karenge.</p>
+      {voiceError && !voiceReady && <p className="saarthi-nav-voice-status" role="status">AI voice abhi connect nahi ho paaya. Likhkar pages khol sakte hain.</p>}
+      <div ref={log} className="saarthi-nav-log" role="log" aria-label="Saarthi conversation" aria-live="polite" aria-relevant="additions">
+        {messages.map((message, index) => <p className={`saarthi-nav-message ${message.role}`} key={index}>
+          <span className="saarthi-nav-sr">{message.role === 'user' ? 'Aap: ' : 'Saarthi: '}</span>{message.text}
+        </p>)}
+      </div>
+      <div className="saarthi-nav-choices" aria-label="Page choices">
+        {(pending.length ? pending : [{ path: '/puja', label: 'Puja' }, { path: '/kundali-creation', label: 'Kundali' }, { path: '/muhurat-finder', label: 'Muhurat' }]).map(choice =>
+          <button type="button" key={choice.path} onClick={() => {
+            // Resolve the exact offered option instead of reinterpreting its label.
+            const result = normalizeNavigationTarget(choice.path);
+            if (!result) return;
+            navigate(result); setPending([]);
+            setMessages(previous => [...previous, { role: 'user' as const, text: choice.label }, { role: 'assistant' as const, text: `${choice.label} khol diya.` }].slice(-24));
+          }}>{choice.label}</button>)}
+      </div>
+      <form className="saarthi-nav-form" onSubmit={event => { event.preventDefault(); send(draft); }}>
+        <label className="saarthi-nav-sr" htmlFor="saarthi-navigation-message">Saarthi ko message</label>
+        <input ref={input} id="saarthi-navigation-message" name="navigation-message" value={draft}
+          onChange={event => setDraft(event.target.value)} maxLength={500} autoComplete="off"
+          placeholder="Jaise: mujhe Kundali banwani hai" />
+        <button type="submit" disabled={!draft.trim()} aria-label="Send Saarthi message"><Send size={19} /></button>
+      </form>
+    </section>}
+  </>;
+}

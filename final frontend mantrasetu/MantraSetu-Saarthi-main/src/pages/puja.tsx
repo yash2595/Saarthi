@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { uniqueServiceForBooking } from '@/lib/conversation-navigation';
 import {
   ArrowRight,
   CheckCircle2,
@@ -186,12 +187,10 @@ export default function Puja() {
 
   // Auto-open booking modal if a single confident service match exists
   useEffect(() => {
-    const targetService = searchParams.get('service') || searchParams.get('q');
+    const targetService = searchParams.get('service');
     if (targetService && pujas.length > 0) {
-      const exactMatches = pujas.filter((p) => matchPujaScore(p, targetService));
-      if (exactMatches.length === 1) {
-        setBookingPuja(exactMatches[0]);
-      }
+      const exactMatch = uniqueServiceForBooking(pujas, targetService);
+      if (exactMatch) setBookingPuja(exactMatch);
     }
   }, [searchParams, pujas]);
 

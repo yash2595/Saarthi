@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X } from 'lucide-react';
@@ -7,12 +7,9 @@ import { SaarthiAvatar } from './SaarthiAvatar';
 import { SaarthiSpeechBubble } from './SaarthiSpeechBubble';
 import { ChoicePopup } from './ChoicePopup';
 import { useSaarthiVoice } from '../../hooks/useSaarthiVoice';
-import { SaarthiNavigationPanel } from './SaarthiNavigationPanel';
 
 export const SaarthiController: React.FC = () => {
-  const { isTtsPlaying, ttsPlaybackId, isGreetingTtsSpeaking, error, isSessionReady } = useSaarthiVoice();
-  const [navigationOpen, setNavigationOpen] = useState(false);
-  const closeNavigation = useCallback(() => setNavigationOpen(false), []);
+  const { isTtsPlaying, ttsPlaybackId, isGreetingTtsSpeaking, error } = useSaarthiVoice();
   const location = useLocation();
 
   useEffect(() => {
@@ -33,11 +30,9 @@ export const SaarthiController: React.FC = () => {
     showSpeechBubble,
     minimizeSaarthi,
     toggleMinimized,
-    continueByText,
   } = useSaarthi();
 
   const isAvatarVisible = onboardingPhase !== 'loading';
-  const openTextNavigation = () => { continueByText(); setNavigationOpen(true); };
 
   return (
     <>
@@ -92,11 +87,10 @@ export const SaarthiController: React.FC = () => {
 
               {/* Choice Popup Buttons */}
               <AnimatePresence>
-                {showChoicePopup && <ChoicePopup onType={openTextNavigation} />}
+                {showChoicePopup && <ChoicePopup />}
               </AnimatePresence>
               {!showChoicePopup && error && <div className="rounded-xl bg-[#fffdf9] p-4 text-sm text-[#703b20]" role="status">
-                <p>AI voice abhi connect nahi ho paaya. Likhkar pages khol sakte hain.</p>
-                <button type="button" onClick={openTextNavigation} className="mt-2 underline font-semibold">Likhkar baat karein</button>
+                <p>AI voice abhi connect nahi ho paaya. Thodi der baad dobara try karein, ya website ke menu se aage badhein.</p>
               </div>}
             </div>
           </motion.div>
@@ -131,7 +125,6 @@ export const SaarthiController: React.FC = () => {
 
         </motion.div>
       )}
-      <SaarthiNavigationPanel open={navigationOpen} onOpen={openTextNavigation} onClose={closeNavigation} voiceError={error} voiceReady={isSessionReady} />
     </>
   );
 };

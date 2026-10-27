@@ -32,7 +32,6 @@ export interface SaarthiContextType {
 
   // Flow Actions
   continueWithSaarthi: () => void;
-  continueByText: () => void;
   continueManually: () => void;
   minimizeSaarthi: () => void;
   forceMinimize: () => void;

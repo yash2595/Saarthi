@@ -10,7 +10,6 @@ A React and FastAPI project for discovering puja services, registering pandits, 
 
 | Area | Implementation and verification |
 | --- | --- |
-| Typed conversation | Runs in the browser without an AI key. Real route allowlist, Hindi/Hinglish/English, ordered clarification, follow-up choices, negation/corrections, cancellation and browser history. |
 | Voice conversation | WebSocket transport, microphone capture, STT adapters, navigation orchestrator and streamed TTS. Automated tests use mocked cloud providers. Real microphone-to-provider-to-speaker production acceptance is pending credentials. |
 | Authentication | Bcrypt password hashing, signed access tokens, signup/login, profile identity and expiring email verification. Verified against disposable local MongoDB. |
 | Pandit onboarding | Multipart registration, draft resume capabilities expiring after seven days, private documents, admin review and approved-only public directory. Verified locally; production MongoDB is pending. |
@@ -36,7 +35,7 @@ flowchart LR
   B --> E[Optional email provider]
 ```
 
-Both server applications use Python/FastAPI; there is no Node/Express backend. The frontend uses React Router and Vite. Page commands are deterministic and remain separate from LLM output. The frontend validates incoming route targets before routing and never treats navigation as permission to submit a form.
+Both server applications use Python/FastAPI; there is no Node/Express backend. The frontend uses React Router and Vite. Voice page commands use deterministic navigation rules and remain separate from LLM output. There is no separate typed chat interface. The frontend validates incoming route targets before routing and never treats navigation as permission to submit a form.
 
 ## Repository layout
 

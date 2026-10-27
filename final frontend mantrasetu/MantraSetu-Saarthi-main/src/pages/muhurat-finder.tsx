@@ -21,11 +21,11 @@ const faqItems = [
   },
   {
     q: 'How are these timings calculated?',
-    a: 'Timings are based on traditional Vedic panchang calculations that consider the tithi (lunar day), nakshatra (star), yoga, karana and local sunrise/sunset times for the selected city.',
+    a: 'The current demo returns sample time windows for illustration. It does not calculate a personalised panchang or astronomical Muhurat.',
   },
   {
     q: 'Can I trust these timings for my ceremony?',
-    a: 'These are traditional reference timings. For personal ceremonies, we always recommend confirming with a qualified panditji who can consider your specific kundali and family traditions.',
+    a: 'These demo timings are not calculated for your ceremony. Consult a qualified panditji for an actual date and time.',
   },
   {
     q: 'Why does location matter?',
@@ -33,7 +33,7 @@ const faqItems = [
   },
   {
     q: 'Are there any timings I should avoid?',
-    a: 'Traditionally, Rahu Kaal, Yamaghantam and Gulika Kaal are considered inauspicious and should be avoided for new beginnings. These are shown separately in the full panchang view.',
+    a: 'Traditionally, Rahu Kaal, Yamaghantam and Gulika Kaal are considered inauspicious and should be avoided for new beginnings. A full panchang view is not available in this version.',
   },
 ];
 
@@ -100,7 +100,7 @@ export default function MuhuratFinder() {
               <h1 id="muhurat-title">Find a moment<br /><em>that feels right.</em></h1>
               <p>Discover auspicious timings for the occasions that matter. Begin with your purpose, place and preferred date.</p>
               <div className="hero-trust" aria-label="Muhurat Finder benefits">
-                <span><CalendarDays size={15} /> Traditional calculations</span>
+                <span><CalendarDays size={15} /> Sample timings</span>
                 <span><ShieldCheck size={15} /> Clear and considered</span>
               </div>
             </div>

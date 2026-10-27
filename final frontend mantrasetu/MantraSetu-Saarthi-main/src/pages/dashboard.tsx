@@ -15,8 +15,8 @@ export default function Dashboard() {
           </p>
           <p style={{ marginTop: '1rem', color: '#8a7d70' }}>
             {user?.role === 'pandit' 
-              ? 'Welcome to your Pandit portal. Here you can track your application and manage your profile.'
-              : 'This is your private space. You can view your booked pujas, saved kundalis, and account settings here.'}
+              ? 'Welcome to your Pandit portal. Check your application status below.'
+              : 'This page shows your account and application status.'}
           </p>
         </div>
 
@@ -42,7 +42,7 @@ export default function Dashboard() {
                 ? 'Congratulations! Your profile is verified and active.'
                 : user.application_status === 'rejected'
                   ? 'Your application was rejected. Please contact support for more details.'
-                  : 'Your profile is currently under review by our verification team. You will be notified once it is approved (usually within 24-48 hours).'}
+                  : 'Your application is awaiting review. Check this page for updates.'}
             </p>
           </div>
         )}

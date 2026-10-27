@@ -31,8 +31,8 @@ export const primaryNavItems = {
 
 const searchCatalog = [
   { label: 'Puja Booking', href: '/puja', source: 'Book authentic pujas with verified panditjis for every occasion.' },
-  { label: 'Muhurat Finder', href: '/muhurat-finder', source: 'Find auspicious timings for weddings, griha pravesh and other events.' },
-  { label: 'Kundali Creation', href: '/kundali-creation', source: 'Generate your Janam Kundali with Vedic astrology insights.' },
+  { label: 'Muhurat Finder', href: '/muhurat-finder', source: 'Explore sample Muhurat timings for ceremonies.' },
+  { label: 'Kundali Creation', href: '/kundali-creation', source: 'Prepare birth details for a Kundali; chart calculation is pending.' },
   { label: 'Pandit Consultation', href: '/#contact', source: 'Connect with verified panditjis for rituals and guidance.' },
   { label: 'Contact', href: '/#contact', source: 'Get in touch with the MantraSetu team.' },
   { label: 'Special Pujas', href: '/puja', source: 'Ceremonies for meaningful moments and special occasions.' },

@@ -52,7 +52,7 @@ const faqItems = [
   },
   {
     q: 'What if I do not know my exact birth time?',
-    a: "You can still generate an approximate kundali using sunrise as the default time. However, for detailed predictions, we recommend consulting a panditji who can help rectify the birth time using life events.",
+    a: "This version does not calculate a birth chart. If your birth time is uncertain, discuss it with a qualified practitioner before requesting a reading.",
   },
   {
     q: 'Is Vedic astrology different from Western astrology?',
@@ -60,7 +60,7 @@ const faqItems = [
   },
   {
     q: 'Can I get a personalised reading?',
-    a: 'Absolutely. Once you generate your kundali, you can book a consultation with one of our verified Jyotishi panditjis for a detailed personalised analysis.',
+    a: 'Automated chart readings and consultation booking are not available yet. You can use the Contact section to ask about future availability.',
   },
 ];
 
@@ -115,9 +115,9 @@ export default function KundaliCreation() {
             <div className="tool-hero-copy">
               <span className="eyebrow">Your stars hold your story</span>
               <h1 id="kundali-title">Discover your<br /><em>Janam Kundali.</em></h1>
-              <p>Generate your personalised Vedic birth chart with accurate planetary positions, house placements and dasha periods.</p>
+              <p>Prepare your birth details. Planetary positions, houses and dasha calculations are not available in this version.</p>
               <div className="hero-trust">
-                <span><ShieldCheck size={15} /> Accurate Vedic calculations</span>
+                <span><ShieldCheck size={15} /> Chart calculation pending</span>
                 <span><BookOpen size={15} /> Traditional Jyotish system</span>
               </div>
             </div>

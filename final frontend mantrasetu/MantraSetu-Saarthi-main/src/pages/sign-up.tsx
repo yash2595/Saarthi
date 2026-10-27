@@ -1055,7 +1055,7 @@ export default function SignUp() {
                   </strong>
                   <p style={{ margin: '0.3rem 0 0', fontSize: '0.85rem', color: '#2d5236', lineHeight: 1.5 }}>
                     {userType === 'pandit'
-                      ? 'Badhai ho! Our verification team will review your Vedic qualifications and identity documents within 24 hours. You will receive SMS & email confirmation once your profile is verified.'
+                      ? 'Your application has been received and is awaiting review. Sign in to check your application status.'
                       : 'Your devotee account has been created successfully. You can now explore authentic pujas and spiritual tools.'}
                   </p>
                   <Link className="button button-primary" to="/" style={{ marginTop: '1rem', display: 'inline-flex' }}>

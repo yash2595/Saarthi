@@ -29,7 +29,7 @@ export const choicePopupVariants = {
   },
 };
 
-export const ChoicePopup: React.FC<{ onType: () => void }> = ({ onType }) => {
+export const ChoicePopup: React.FC = () => {
   const { continueWithSaarthi, continueManually } = useSaarthi();
 
   return (
@@ -63,9 +63,6 @@ export const ChoicePopup: React.FC<{ onType: () => void }> = ({ onType }) => {
           <MousePointerClick size={15} /> Continue Manually
         </button>
       </div>
-      <button type="button" onClick={onType} className="text-sm font-semibold text-[#7a3e1e] underline underline-offset-4 py-2">
-        Likhkar Saarthi se baat karein
-      </button>
     </motion.div>
   );
 };

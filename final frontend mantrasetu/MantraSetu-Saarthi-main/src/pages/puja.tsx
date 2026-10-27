@@ -190,7 +190,7 @@ export default function Puja() {
     const targetService = searchParams.get('service');
     if (targetService && pujas.length > 0) {
       const exactMatch = uniqueServiceForBooking(pujas, targetService);
-      if (exactMatch) setBookingPuja(exactMatch);
+      setBookingPuja(exactMatch || null);
     }
   }, [searchParams, pujas]);
 

@@ -12,6 +12,7 @@ export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voic
   const location = useLocation();
   const currentPath = location.pathname + location.search + location.hash;
   const history = useRef([currentPath]);
+  const requestedScroll = useRef(false);
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState<Destination[]>([]);
   const [messages, setMessages] = useState<Message[]>([{ role: 'assistant', text: 'Namaste! Kaunsa page kholun? “Puja dikhao”, “Kundali banao” ya “Pandit registration” likhiye. Hindi mein bhi likh sakte hain.' }]);
@@ -21,17 +22,28 @@ export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voic
 
   useEffect(() => {
     if (history.current.at(-1) !== currentPath) history.current = [...history.current, currentPath].slice(-30);
+    if (!requestedScroll.current) return;
+    requestedScroll.current = false;
     const section = location.hash.slice(1);
     const frame = requestAnimationFrame(() => {
-      if (section) document.getElementById(section)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const anchors: Record<string, string> = {
+        '/puja': '#puja-catalog-section', '/kundali-creation': '#kundali-form-section',
+        '/muhurat-finder': '#muhurat-finder-section', '/login': '[data-testid="card-login"]',
+        '/signup': '[data-testid="card-signup"]', '/sign-up': '[data-testid="card-signup"]',
+      };
+      const target = section ? document.getElementById(section) : document.querySelector(anchors[location.pathname] || 'main');
+      const top = target && (location.pathname !== '/' || section)
+        ? Math.max(0, target.getBoundingClientRect().top + window.scrollY - 88) : 0;
+      window.scrollTo({ top, behavior: 'smooth' });
     });
     return () => cancelAnimationFrame(frame);
-  }, [currentPath, location.hash]);
+  }, [currentPath, location.hash, location.pathname, location.key]);
 
   useEffect(() => { if (open) input.current?.focus(); }, [open]);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [messages, open]);
 
   function close() { onClose(); requestAnimationFrame(() => launcher.current?.focus()); }
+  function navigateTo(path: string) { requestedScroll.current = true; navigate(path); }
   function send(message: string) {
     const text = message.trim().slice(0, 500);
     if (!text) return;
@@ -40,14 +52,14 @@ export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voic
     if (reply.kind === 'navigate' && reply.destination) {
       const path = normalizeNavigationTarget(reply.destination.path);
       if (path) {
-        navigate(path);
+        navigateTo(path);
         if (path === '/dashboard') response = 'My account khol raha hoon. Sign in nahi kiya hai to pehle Login page dikhega.';
       }
     } else if (reply.kind === 'back') {
       if (history.current.length > 1) {
         const previous = history.current.at(-2)!;
         history.current = history.current.slice(0, -2);
-        navigate(previous);
+        navigateTo(previous);
       } else response = 'Is session mein abhi koi pichhla page nahi hai. Kaunsa page kholun?';
     }
     setPending(reply.choices || []);
@@ -79,7 +91,7 @@ export function SaarthiNavigationPanel({ open, onOpen, onClose, voiceError, voic
             // Resolve the exact offered option instead of reinterpreting its label.
             const result = normalizeNavigationTarget(choice.path);
             if (!result) return;
-            navigate(result); setPending([]);
+            navigateTo(result); setPending([]);
             setMessages(previous => [...previous, { role: 'user' as const, text: choice.label }, { role: 'assistant' as const, text: `${choice.label} khol diya.` }].slice(-24));
           }}>{choice.label}</button>)}
       </div>

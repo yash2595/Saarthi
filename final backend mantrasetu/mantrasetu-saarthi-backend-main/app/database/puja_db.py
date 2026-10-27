@@ -30,7 +30,7 @@ async def create_booking(
         "time": time,
         "devotee_name": devotee_name,
         "phone": phone,
-        "status": "confirmed",
+        "status": "requested",
     }
     result = await booking_collection.insert_one(document)
     return str(result.inserted_id)

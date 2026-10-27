@@ -27,6 +27,7 @@ class SignupRequest(BaseModel):
 
 
 class SignupResponse(BaseModel):
+    email_sent: bool = False
     """What we send back after a successful signup."""
 
     status: str

@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSaarthi } from '../components/saarthi/SaarthiContext';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation, useNavigationType } from 'react-router-dom';
+import { recordNavigation, canGoBack, type NavigationHistory } from '../lib/navigation-history';
 import { getPersistableData } from '../utils/formSecurity';
 import apiClient from '../api/api';
-import { isPanditNavigation, normalizeNavigationTarget } from '../lib/conversation-navigation';
+import { isPanditNavigation, normalizeNavigationTarget, isGreetingOnlyResponse } from '../lib/conversation-navigation';
 
 /** Shared sanitization helper to guarantee no passwords/credentials enter sessionStorage */
 export function persistVoiceState(data: Record<string, any>) {
@@ -579,6 +580,12 @@ export function useSaarthiVoice() {
 
   // toggleMic removed for revert
   const navigate = useNavigate();
+  const routeLocation = useLocation();
+  const routeAction = useNavigationType();
+  const voiceHistory = useRef<NavigationHistory>({ entries: [{ key: routeLocation.key, path: routeLocation.pathname }], index: 0 });
+  useEffect(() => {
+    voiceHistory.current = recordNavigation(voiceHistory.current, { key: routeLocation.key, path: routeLocation.pathname + routeLocation.search + routeLocation.hash }, routeAction);
+  }, [routeLocation, routeAction]);
 
 
 
@@ -655,7 +662,7 @@ export function useSaarthiVoice() {
 
   // Sync activeFieldRef on page change: reset to null on non-signup pages
   useEffect(() => {
-    const isSignupPage = window.location.pathname.includes('/signup');
+    const isSignupPage = (/^\/sign-?up$/.test(window.location.pathname) && new URLSearchParams(window.location.search).get('role') === 'pandit');
     if (!isSignupPage) {
       activeFieldRef.current = null;
     }
@@ -736,7 +743,7 @@ export function useSaarthiVoice() {
       // Clear dirty flag for this field once handled
       dirtyFieldsRef.current.delete(fieldName);
 
-      const isSignupPage = window.location.pathname.includes('/signup');
+      const isSignupPage = (/^\/sign-?up$/.test(window.location.pathname) && new URLSearchParams(window.location.search).get('role') === 'pandit');
       if (!isSignupPage || !fieldName || !value.trim()) return;
       if (wsRef.current?.readyState !== WebSocket.OPEN || !isSessionReadyRef.current) return;
       if (isExecutingSequenceRef.current || isSaarthiTypingRef.current) return;
@@ -1754,6 +1761,9 @@ export function useSaarthiVoice() {
             }
 
             // ── REFRESH_PAGE ACTION HANDLER ──
+            if (action === 'GO_BACK') {
+              if (canGoBack(voiceHistory.current)) navigate(-1);
+            }
             if (action === 'REFRESH_PAGE') {
               console.log('[PROOF-FEATURE-C] Executing REFRESH_PAGE action directive -> window.location.reload() called!');
               setTimeout(() => {
@@ -1762,7 +1772,7 @@ export function useSaarthiVoice() {
             }
 
             // ── GREETING & CEREMONIAL VISUAL MOMENT: Trigger 'greeting' avatar animation ──
-            const isGreetingResponse = intent === 'GREETING' || msg.payload.intent === 'GREETING' || contentStr.toLowerCase().includes('namaste') || contentStr.toLowerCase().includes('om namah shivaya');
+            const isGreetingResponse = isGreetingOnlyResponse(action, intent || msg.payload.intent, contentStr);
             if (isGreetingResponse) {
               console.log('[Voice] [CONNECT-DIAGNOSTIC] Initial Greeting response received. Triggering greeting avatar animation.');
               action = null;
@@ -2312,7 +2322,7 @@ export function useSaarthiVoice() {
               console.log('[FORM-SUBMIT] SUBMIT_FORM action received. Target button:', target);
 
               // BUG-11.2 FIX: Expanded detection — check URL, wizard-step element, or any pandit-prefixed testid
-              const isPanditForm = window.location.pathname.includes('/signup') ||
+              const isPanditForm = (/^\/sign-?up$/.test(window.location.pathname) && new URLSearchParams(window.location.search).get('role') === 'pandit') ||
                 !!document.querySelector('#pandit-onboarding-form, [data-testid="card-signup"], [data-testid="pandit-wizard-step"], [data-testid^="input-pandit-"]');
               console.log('[FORM-SUBMIT] isPanditForm:', isPanditForm, '| URL:', window.location.pathname);
               if (isPanditForm) {

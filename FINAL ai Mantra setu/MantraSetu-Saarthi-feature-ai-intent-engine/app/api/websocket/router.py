@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import time
+from urllib.parse import urlsplit, parse_qs
 from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -104,7 +105,7 @@ async def voice_websocket_endpoint(websocket: WebSocket) -> None:
         return
 
     try:
-        ticket_secret = getattr(settings, "voice_ticket_secret", None) or "mantrasetu_voice_ticket_secret_shared_2026"
+        ticket_secret = settings.voice_ticket_secret
         jwt_algo = getattr(settings, "jwt_algorithm", "HS256")
         ticket_payload = jwt.decode(raw_ticket, ticket_secret, algorithms=[jwt_algo])
     except JWTError as err:
@@ -197,8 +198,8 @@ async def voice_websocket_endpoint(websocket: WebSocket) -> None:
                     user_parameters=user_params,
                     request_id=turn_request_id,
                 )
-                logger.info(f"[FRESH-STT] '{final_text}'")
-                logger.info(f"[STT-RESULT] text='{final_text}' confidence={getattr(resp, 'confidence', 1.0)}")
+                logger.debug("STT transcript received (%d characters)", len(final_text))
+                logger.debug("STT confidence=%s", getattr(resp, "confidence", None))
                 
                 # 🚨 INSTANT USER STT TRANSCRIPT: Send user's transcript immediately before AI processing!
                 if final_text and final_text.strip():
@@ -219,7 +220,7 @@ async def voice_websocket_endpoint(websocket: WebSocket) -> None:
                     )
                     try:
                         outbound_queue.put_nowait(tx_reply)
-                        logger.info(f"[WS-ROUTER] Instant user TRANSCRIPT envelope queued: text={final_text!r} provider={_tx_provider} lang={_tx_lang}")
+                        logger.debug("Transcript envelope queued provider=%s language=%s", _tx_provider, _tx_lang)
                     except asyncio.QueueFull:
                         pass
 
@@ -408,7 +409,7 @@ async def voice_websocket_endpoint(websocket: WebSocket) -> None:
             except asyncio.TimeoutError:
                 logger.warning("[WS-ROUTER] WebSocket receive timed out after 60s of inactivity.")
                 break
-            logger.info(f"[WS-ROUTER] Incoming raw WebSocket text message: {raw_text[:200]}...")
+            logger.debug("Incoming WebSocket frame (%d bytes)", len(raw_text))
             try:
                 frame = WebSocketEnvelope.model_validate_json(raw_text)
             except Exception as parse_err:
@@ -501,8 +502,8 @@ async def voice_websocket_endpoint(websocket: WebSocket) -> None:
                     transport_metrics.record_dropped_frame()
 
                 # ── Send page-aware greeting AI_RESPONSE on connect ──
-                if connect_page and ("signup" in connect_page or "pandit" in connect_page):
-                    greeting_text = "Om Namah Shivaya! MantraSetu parivar mein aapka hardik swagat hai, Panditji. Aapki jaankari poori tarah surakshit rahegi. Chaliye, ab hum aapka registration shuru karte hain. Namaste! Aap chahein to apni profile photo upload kar sakte hain, ye optional hai. Agar upload karna hai to 'Choose Picture' par click kijiye, nahi to bas 'skip' ya 'aage badho' boliye."
+                if urlsplit(connect_page or '/').path.rstrip('/') in ('/signup', '/sign-up') and parse_qs(urlsplit(connect_page or '/').query).get('role') == ['pandit']:
+                    greeting_text = "Om Namah Shivaya! MantraSetu parivar mein aapka hardik swagat hai, Panditji. Chaliye, ab hum aapka registration shuru karte hain. Namaste! Aap chahein to apni profile photo upload kar sakte hain, ye optional hai. Agar upload karna hai to 'Choose Picture' par click kijiye, nahi to bas 'skip' ya 'aage badho' boliye."
                     initial_active_field = "pandit-avatar"
                 else:
                     greeting_text = "Namaste! MantraSetu mein aapka swagat hai. Aaj main aapki kya seva kar sakta hoon?"

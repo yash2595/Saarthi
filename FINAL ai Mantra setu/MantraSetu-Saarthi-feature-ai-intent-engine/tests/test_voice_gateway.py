@@ -149,7 +149,7 @@ class TestVoiceGateway(IsolatedAsyncioTestCase):
 
     def test_factory_builders(self) -> None:
         """Verify build_voice_gateway and build_websocket_voice_handler construct functional instances."""
-        gateway = build_voice_gateway(ai_orchestrator=self.mock_ai_orchestrator, stt_provider="inworld")
+        gateway = build_voice_gateway(ai_orchestrator=self.mock_ai_orchestrator, stt_provider="inworld", api_key="unit-test-only")
         self.assertIsInstance(gateway, VoiceGateway)
 
         ws_handler = build_websocket_voice_handler(voice_gateway=gateway)

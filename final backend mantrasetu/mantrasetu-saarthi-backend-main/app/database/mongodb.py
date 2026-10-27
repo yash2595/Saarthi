@@ -20,6 +20,8 @@ async def check_database_connection():
         print("[INFO] Creating MongoDB indexes...")
         await database["users"].create_index("email", unique=True)
         await database["pandit_applications"].create_index("email", unique=True, sparse=True)
+        await database['pandit_drafts'].create_index('draft_id', unique=True)
+        await database['pandit_drafts'].create_index('expires_at', expireAfterSeconds=0)
         print("[INFO] MongoDB indexes created successfully.")
     except Exception as e:
         print(f"[ERROR] Failed to create MongoDB indexes: {e}")

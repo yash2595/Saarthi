@@ -20,7 +20,7 @@ async def handle_voice_proxy(websocket: WebSocket, query_str: str):
     
     base_ws_url = settings.AI_SERVICE_URL.replace("http", "ws").replace("/api/v1", "") + "/ws/voice"
     ai_ws_url = f"{base_ws_url}?{query_str}" if query_str else base_ws_url
-    logger.info(f"Connecting to AI WebSocket at {ai_ws_url}")
+    logger.info("Connecting to AI WebSocket at %s", base_ws_url)
     
     close_code = 1000
     close_reason = "Normal Closure"
@@ -87,7 +87,7 @@ async def handle_voice_proxy(websocket: WebSocket, query_str: str):
                         close_reason = f"Upstream proxy error: {exc}"
             
     except Exception as e:
-        logger.error(f"Failed to connect to AI WebSocket: {e}")
+        logger.error("Failed to connect to AI WebSocket (%s)", type(e).__name__)
         if isinstance(e, ConnectionClosed):
             close_code = getattr(e, "code", 1008) or 1008
             close_reason = getattr(e, "reason", "") or "Upstream closed connection"
@@ -101,7 +101,7 @@ async def handle_voice_proxy(websocket: WebSocket, query_str: str):
                 close_reason = "Rate limit exceeded (403 Forbidden). Bahut zyada attempts ho gaye hain, kripya thodi der baad try karein."
             else:
                 close_code = 1011
-                close_reason = f"AI Service connection failed: {err_msg}"
+                close_reason = "AI Service connection failed. Please try again shortly."
 
     finally:
         try:

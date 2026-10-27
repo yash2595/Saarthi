@@ -85,7 +85,9 @@ async def execute_signup(request: SignupRequest) -> SignupResponse:
 
     return SignupResponse(
         status="success",
-        message="Account created successfully. Please check your email to verify your account.",
+        message=('Account created. Check your email to verify your account.' if email_sent
+                 else 'Account created. Verification email could not be delivered; please contact support.'),
+        email_sent=email_sent,
         user_id=user_id,
         access_token=access_token,
         token_type="bearer",

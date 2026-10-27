@@ -4,6 +4,8 @@ from __future__ import annotations
 from app.orchestrator.navigation_intent_detector import is_navigation_command, resolve_navigation_target
 
 import logging
+import re
+from urllib.parse import urlsplit, parse_qs
 import time
 from datetime import datetime, timezone
 from threading import RLock
@@ -99,11 +101,12 @@ def build_location_response(session: Any) -> str:
     page = getattr(session, "current_page", "/")
     field = getattr(session, "current_field", None)
     onboarding_state = getattr(session, "onboarding_state", None)
-    logger.info("[DIAGNOSTIC-BUILD-LOCATION] session_id=%s, current_page=%r, current_field=%r, onboarding_state=%r", getattr(session, "session_id", "N/A"), page, field, onboarding_state)
+    logger.debug("Location awareness requested for page %s", (page or "/").split("?")[0])
 
     # Comprehensive route -> human-readable name map (all app pages)
     page_names = {
         "/signup?role=pandit": "Panditji Registration page",
+        "/sign-up?role=pandit": "Panditji Registration page",
         "/signup": "Signup page",
         "/sign-up": "Signup page",
         "/login": "Login page",
@@ -170,7 +173,9 @@ _ROUTE_MAP = {
     "/muhurat": "/muhurat-finder",
     "/pandit": "/puja",
     "/booking": "/puja",
-    "/sign-up": "/signup",
+    "/signup": "/sign-up",
+    "/profile": "/dashboard",
+    "/about": "/#mission",
     "/contact": "/#contact",
 }
 
@@ -395,11 +400,17 @@ class AIOrchestrator:
 
         # 3.5 Fallback Auto-Init for Pandit Onboarding (Runs before navigation detection to prevent false navigation hijacking)
         page_str = sanitized_req.current_page or ""
+        parsed_page = urlsplit(page_str)
+        is_pandit_page = parsed_page.path.rstrip('/') in ('/signup', '/sign-up') and parse_qs(parsed_page.query).get('role') == ['pandit']
+        if not is_pandit_page and getattr(session, 'onboarding_state', None):
+            session.onboarding_state = {}
+        pending_choices = getattr(session, 'pending_navigation_choices', [])
+        nav_result = resolve_navigation_target(sanitized_req.user_message, pending_choices)
         msg_lower_check = sanitized_req.user_message.strip().lower()
         is_explicit_signup = any(w in msg_lower_check for w in ["register", "signup", "sign up", "onboard", "roop mein", "banna hai", "onboarding"])
         onboarding_state = getattr(session, "onboarding_state", None)
 
-        if (not onboarding_state or not onboarding_state.get("active")) and ("/signup" in page_str or "pandit" in page_str) and not is_explicit_signup:
+        if (not onboarding_state or not onboarding_state.get("active")) and is_pandit_page and not is_explicit_signup and not nav_result.get('handled'):
             session.onboarding_state = {
                 "active": True,
                 "current_field_index": 0,
@@ -433,19 +444,29 @@ class AIOrchestrator:
 
         # -- NAVIGATION INTENT DETECTION --
         is_active_onboarding = onboarding_state and onboarding_state.get("active")
-        is_on_signup_page = "/signup" in page_str or "pandit" in page_str
+        is_on_signup_page = is_pandit_page
         has_client_field = bool(sanitized_req.user_parameters.get("active_field") or sanitized_req.user_parameters.get("field"))
         
-        if not is_active_onboarding and not is_on_signup_page and not has_client_field and is_navigation_command(sanitized_req.user_message) and not getattr(session, "pending_pandit_clarification", False) and not getattr(session, "pending_tour_clarification", False):
-            nav_result = resolve_navigation_target(sanitized_req.user_message)
-            if nav_result["needs_clarification"]:
-                msg_clean_check = sanitized_req.user_message.lower()
-                if "book" in msg_clean_check or "puja" in msg_clean_check or "pooja" in msg_clean_check:
-                    session.pending_booking = {"service": nav_result.get("query") or "Puja"}
-                elif "kundali" in msg_clean_check or "kundli" in msg_clean_check or "birth chart" in msg_clean_check or "patri" in msg_clean_check:
-                    session.pending_kundali = {"active": True}
-                elif "muhurat" in msg_clean_check or "muhurth" in msg_clean_check or "samay" in msg_clean_check:
-                    session.pending_muhurat = {"active": True}
+        explicit_page_command = bool(re.search(r'\b(open|show|go to|kholo|dikhao|le chalo)\b|खोलो|दिखाओ', msg_lower_check))
+        if nav_result.get('handled') and (not has_client_field or explicit_page_command or pending_choices):
+            session.pending_navigation_choices = nav_result.get('choices', [])
+            # Page selection must not become a booking/DOB workflow.
+            session.pending_booking = None
+            session.pending_kundali = None
+            session.pending_muhurat = None
+            if not nav_result.get('target') and not nav_result.get('needs_clarification'):
+                action = nav_result.get('action')
+                directive = {'action': action, 'target': None, 'intent': 'NAVIGATE'} if action else None
+                if directive:
+                    self._frontend_bridge.publish_navigation_event(request.session_id, directive)
+                return self._response_builder.build_response(
+                    request_id=request.request_id,
+                    text_override=nav_result.get('clarification_msg', 'Pichhla page khol raha hoon.'),
+                    response_type=ResponseType.NAVIGATION_DIRECTIVE if action else ResponseType.CHAT,
+                    navigation_directive=directive,
+                    metadata=ResponseMetadata(fast_path=True),
+                )
+            if nav_result['needs_clarification']:
                 elapsed_ms = (time.perf_counter() - t_start) * 1000.0
                 return self._response_builder.build_response(
                     request_id=request.request_id,
@@ -485,7 +506,7 @@ class AIOrchestrator:
                         nav_directive["location"] = nav_result["location"]
                     self._frontend_bridge.publish_navigation_event(request.session_id, nav_directive)
                     
-                    if target_route == "/signup?role=pandit":
+                    if target_route == "/sign-up?role=pandit":
                         import random
                         text_override = random.choice([
                             "Om Namah Shivaya! MantraSetu parivar mein aapka hardik swagat hai, Panditji. Chaliye, ab hum aapka registration shuru karte hain. Namaste! Aap chahein to apni profile photo upload kar sakte hain, ye optional hai. Agar upload karna hai to 'Choose Picture' par click kijiye, nahi to bas 'skip' ya 'aage badho' boliye.",

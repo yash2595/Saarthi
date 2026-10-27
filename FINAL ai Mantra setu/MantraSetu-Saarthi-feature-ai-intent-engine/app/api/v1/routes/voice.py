@@ -66,7 +66,7 @@ def _raise_http_exception(exc: Exception) -> None:
 @router.post("/ticket", summary="Generate a WebSocket connection ticket")
 async def generate_voice_ticket(request: Request):
     """Generate a short-lived JWT ticket for WebSocket authentication."""
-    ticket_secret = getattr(settings, "voice_ticket_secret", None) or "mantrasetu_voice_ticket_secret_shared_2026"
+    ticket_secret = settings.voice_ticket_secret
     
     # Generate a ticket valid for 5 minutes
     payload = {

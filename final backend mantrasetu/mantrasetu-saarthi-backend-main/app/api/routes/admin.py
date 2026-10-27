@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional
 from app.core.config import settings
 from bson import ObjectId
+import hmac
 from app.database.mongodb import database
 
 router = APIRouter(
@@ -20,7 +21,7 @@ async def update_pandit_status(
     request: StatusUpdateRequest,
     x_admin_key: str = Header(None)
 ):
-    if not x_admin_key or x_admin_key != getattr(settings, "ADMIN_SECRET_KEY", "mantrasetu-admin-secret"):
+    if not x_admin_key or not hmac.compare_digest(x_admin_key, settings.ADMIN_SECRET_KEY):
         raise HTTPException(status_code=403, detail="Invalid admin key")
         
     valid_statuses = ["pending", "approved", "rejected"]

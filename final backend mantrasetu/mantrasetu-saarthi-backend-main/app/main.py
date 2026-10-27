@@ -1,5 +1,4 @@
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from app.api.routes.health import router as health_router
 from app.database.mongodb import check_database_connection
@@ -36,7 +35,8 @@ app = FastAPI(
     lifespan=lifespan
 )
 Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+from app.api.routes.uploads import router as uploads_router
+app.include_router(uploads_router)
 
 @app.middleware("http")
 async def require_database_configuration(request, call_next):

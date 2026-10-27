@@ -23,7 +23,8 @@ Set these variables in Render, then deploy both services:
 | `MONGODB_URI` | Required | Required; use the same Atlas database |
 | `GROQ_API_KEY` | — | Required |
 | `INWORLD_API_KEY` | — | Required for voice |
-| `SMTP_USERNAME`, `SMTP_PASSWORD` | Optional; required for verification emails | — |
+| `RESEND_API_KEY`, `EMAIL_FROM` | Optional HTTPS email provider with verified sender | — |
+| `DATABASE_NAME` | Set explicitly | Set to the same value |
 | `GOOGLE_CLIENT_ID` | Optional; required for Google sign-in | — |
 
 For Google sign-in, also set Vercel `VITE_GOOGLE_CLIENT_ID` to the same client ID and configure the production origin in Google Cloud. Redeploy the frontend after changing Vite variables.
@@ -44,3 +45,15 @@ Frontend: `npm ci` and `npm run build` in its root directory.
 Service smoke tests: install backend dependencies plus `google-genai`, `groq`, `PyJWT`, and `pytest`, then run `python -m pytest deployment/test_startup.py` from the repo root.
 
 After configuration, verify backend `/ready`, AI `/health`, signup/login, a puja query, and a voice session. Keep `/live` distinct from full readiness so pending setup is not reported as a healthy AI pipeline.
+
+## Email and document storage
+
+Free Render web services block outbound SMTP ports 25/465/587. The backend supports Resend over HTTPS using `RESEND_API_KEY` and `EMAIL_FROM`; provision a verified sender before testing actual email delivery. SMTP remains an option only on hosting that permits it. Missing configuration is reported as delivery failure.
+
+Private Aadhaar/certificates require an owner access token or the admin header. Only approved gallery files are public. Uploads have content and size checks; these are not an antivirus scan. Free local storage is ephemeral, so real identity-document collection must wait for durable storage.
+
+Draft capabilities expire after seven days and accept only supported non-password fields. Old caller-chosen draft identifiers are rejected. Store signing keys securely; rotating the account signing key invalidates outstanding access tokens and draft links.
+
+## CI and acceptance
+
+Install `deployment/requirements-test.txt`, run `deployment/run_ai_checks.py`, the backend `tests/test_security_contract.py` suite and `deployment/test_startup.py`. The AI runner uses mocked provider contracts and real local WebSocket framing. Actual cloud speech acceptance is still required after credentials are configured.

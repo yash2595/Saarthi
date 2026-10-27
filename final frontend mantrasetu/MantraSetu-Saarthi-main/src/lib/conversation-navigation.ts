@@ -1,4 +1,8 @@
 export type Destination = { path: string; label: string };
+/** A welcome phrase can accompany navigation; never erase its action. */
+export function isGreetingOnlyResponse(action: unknown, intent: unknown, text: string): boolean {
+  return !action && (intent === 'GREETING' || /namaste|om namah shivaya/i.test(text));
+}
 export type NavigationReply = {
   kind: 'navigate' | 'clarify' | 'cancel' | 'back' | 'help' | 'unknown' | 'unavailable';
   text: string;

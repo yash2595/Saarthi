@@ -80,12 +80,14 @@ def create_app() -> FastAPI:
         ws_router,
     )
     
-    from app.api.v1.routes.auth import router as auth_router
-    from app.api.v1.routes.stubs import router as stubs_router
     from app.api.v1.routes.voice import router as voice_router
     from app.api.v1.routes.health import health_check
-    application.include_router(auth_router)
-    application.include_router(stubs_router)
+    import os
+    if os.getenv('ENABLE_DEMO_ROUTES', '').lower() == 'true' and os.getenv('RENDER') != 'true':
+        from app.api.v1.routes.auth import router as auth_router
+        from app.api.v1.routes.stubs import router as stubs_router
+        application.include_router(auth_router)
+        application.include_router(stubs_router)
     application.include_router(voice_router)
     application.get("/health")(health_check)
 

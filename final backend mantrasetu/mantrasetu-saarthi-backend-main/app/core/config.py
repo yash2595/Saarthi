@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 587
     SMTP_USERNAME: str | None = None
     SMTP_PASSWORD: str | None = None
+    RESEND_API_KEY: str = ''
+    EMAIL_FROM: str = ''
 
     @property
     def cors_origins_list(self) -> list[str]:

@@ -196,7 +196,7 @@ export default function SignUp() {
       });
       const res = await authService.saveDraft(payload);
       if (res.status === 'success') {
-        const link = `${window.location.origin}/signup?role=pandit&draft=${res.draft_id}`;
+        const link = `${window.location.origin}/sign-up?role=pandit&draft=${encodeURIComponent(res.draft_id)}`;
         setDraftLink(link);
       }
     } catch (err) {

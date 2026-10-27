@@ -15,8 +15,8 @@ async def get_pandit_list():
     return await process_get_pandit_list()
 
 
-from pydantic import BaseModel
-import uuid
+from pydantic import BaseModel, field_validator
+from app.services.draft_security import create_draft_capability, decode_draft_capability, validate_draft_data
 from typing import Dict, Any
 from app.database.pandit_db import save_pandit_draft, get_pandit_draft
 
@@ -24,24 +24,35 @@ class DraftRequest(BaseModel):
     draft_id: Optional[str] = None
     data: Dict[str, Any]
 
+    @field_validator('data')
+    @classmethod
+    def non_sensitive_fields(cls, value):
+        return validate_draft_data(value)
+
 @router.post("/draft")
 async def save_draft(request: DraftRequest):
-    did = request.draft_id or str(uuid.uuid4())
-    await save_pandit_draft(did, request.data)
-    print(f"[BACKEND-DRAFT] Draft saved | draft_id={did}")
+    if request.draft_id:
+        did, expiry = decode_draft_capability(request.draft_id)
+        capability = request.draft_id
+    else:
+        did, capability, expiry = create_draft_capability()
+    saved = await save_pandit_draft(did, request.data, expiry, create=request.draft_id is None)
+    if not saved:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail='Draft link is invalid or expired')
 
     # Send draft-resume email if email is available in draft data
     email_in_draft = request.data.get("panditEmail") or request.data.get("email")
     if email_in_draft:
         from app.services.email_service import send_draft_resume_email
         import os
-        base_url = os.getenv("BASE_URL", "http://localhost:8000")
-        draft_url = f"{base_url}/signup?role=pandit&draft={did}"
+        base_url = os.getenv('FRONTEND_URL') or os.getenv('CORS_ORIGINS', '').split(',')[0] or 'http://localhost:5173'
+        draft_url = f"{base_url.rstrip('/')}/sign-up?role=pandit&draft={capability}"
         pandit_name = (
             request.data.get("panditName")
             or f"{request.data.get('panditFirstName', '')} {request.data.get('panditLastName', '')}".strip()
         )
-        print(f"[BACKEND-DRAFT] Sending draft-resume email to {email_in_draft}...")
+        print("[BACKEND-DRAFT] Attempting draft-resume email delivery")
         await send_draft_resume_email(
             to_email=email_in_draft,
             draft_url=draft_url,
@@ -50,11 +61,12 @@ async def save_draft(request: DraftRequest):
     else:
         print("[BACKEND-DRAFT] No email in draft data — skipping draft-resume email.")
 
-    return {"status": "success", "draft_id": did}
+    return {"status": "success", "draft_id": capability}
 
 @router.get("/draft/{draft_id}")
 async def get_draft(draft_id: str):
-    draft = await get_pandit_draft(draft_id)
+    identifier, _ = decode_draft_capability(draft_id)
+    draft = await get_pandit_draft(identifier)
     if not draft:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Draft not found")

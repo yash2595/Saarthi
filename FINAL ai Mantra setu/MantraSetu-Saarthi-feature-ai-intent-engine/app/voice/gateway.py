@@ -260,7 +260,7 @@ class VoiceGateway:
             "[AUDIO-BUFFER] request_id=%s session_id=%s post_flush_bytes=%d",
             turn_request_id, session_id, buffer.size,
         )
-        logger.info(f"[DIAGNOSTIC] RAW STT TRANSCRIPT before LLM extraction: {stt_result.text!r}")
+        logger.debug("STT transcript received (%d characters)", len(stt_result.text))
 
         final_text = (stt_result.text or "").strip()
         stt_status = stt_result.metadata.get("status", "success")

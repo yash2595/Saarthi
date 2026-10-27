@@ -447,12 +447,12 @@ export default function Puja() {
                     <CheckCircle2 size={28} />
                   </div>
                   <span className="section-kicker">Booking Received</span>
-                  <h2 id="booking-title" style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Your Puja Reservation is Confirmed!</h2>
+                  <h2 id="booking-title" style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Your Puja Request Has Been Received</h2>
                   <p style={{ color: '#68645f', fontSize: '0.84rem', lineHeight: 1.6, maxWidth: 420, margin: '0 auto 1.4rem' }}>
-                    Thank you, <strong>{devoteeName || 'Devotee'}</strong>. Our verified panditji will call you to confirm location details for <strong>{bookingPuja.title}</strong> on <strong>{bookingDate}</strong>.
+                    Thank you, <strong>{devoteeName || 'Devotee'}</strong>. Your request for <strong>{bookingPuja.title}</strong> on <strong>{bookingDate}</strong> is awaiting availability and pandit confirmation.
                   </p>
                   <div style={{ padding: '0.8rem', background: '#fff0d9', borderRadius: '0.45rem', fontSize: '0.75rem', color: '#7a3e1e', marginBottom: '1.4rem' }}>
-                    * Demo mode: No payment has been processed. Complete samagri list will be sent via SMS/WhatsApp.
+                    No payment has been processed. This request does not guarantee a pandit or time slot.
                   </div>
                   <button className="button button-primary" type="button" onClick={closeBookingModal}>
                     Done

@@ -11,6 +11,15 @@ to a fresh client created inside the current test's event loop.
 """
 import pytest
 import asyncio
+import os
+import secrets
+from uuid import uuid4
+
+# Tests always use a disposable database and generated signing secrets.
+os.environ['MONGODB_URI'] = os.getenv('TEST_MONGODB_URI', 'mongodb://127.0.0.1:27017')
+os.environ['DATABASE_NAME'] = 'saarthi_contract_' + uuid4().hex
+for key in ('JWT_SECRET_KEY', 'ADMIN_SECRET_KEY', 'VOICE_TICKET_SECRET'):
+    os.environ[key] = secrets.token_urlsafe(48)
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.config import settings
 
@@ -29,7 +38,11 @@ def anyio_backend():
 
 
 @pytest.fixture(autouse=True)
-async def patch_mongodb_client():
+async def patch_mongodb_client(request):
+    if request.node.path.name == 'test_security_contract.py':
+        # HTTP tests share TestClient's one lifespan/event loop.
+        yield
+        return
     # Instantiate client and database under the currently running test loop
     client = AsyncIOMotorClient(settings.MONGODB_URI)
     database = client[settings.DATABASE_NAME]

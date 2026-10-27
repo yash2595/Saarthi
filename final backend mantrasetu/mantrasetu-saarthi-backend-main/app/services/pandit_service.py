@@ -42,7 +42,25 @@ async def execute_pandit_application(
     gallery_files: Optional[List[UploadFile]] = None,
     gallery_files_meta: Optional[str] = None,
 ) -> PanditApplicationResponse:
-
+    from pydantic import TypeAdapter, EmailStr, ValidationError
+    import re
+    try:
+        email = str(TypeAdapter(EmailStr).validate_python(email.strip()))
+    except ValidationError:
+        raise HTTPException(status_code=422, detail='Use a valid email address')
+    name, city, state = name.strip(), city.strip(), state.strip()
+    if not (2 <= len(name) <= 120 and 2 <= len(city) <= 100 and 2 <= len(state) <= 100):
+        raise HTTPException(status_code=422, detail='Name, city and state are required and must fit the field limits')
+    if not re.fullmatch(r'\+?[0-9 ()-]+', phone) or not 10 <= len(re.sub(r'\D', '', phone)) <= 15:
+        raise HTTPException(status_code=422, detail='Use a valid phone number')
+    if len(password) < 8 or len(password.encode('utf-8')) > 72:
+        raise HTTPException(status_code=422, detail='Password must be at least 8 characters and at most 72 UTF-8 bytes')
+    if not languages or len(languages) > 20 or any(not value.strip() or len(value) > 60 for value in languages):
+        raise HTTPException(status_code=422, detail='Select valid spoken languages')
+    if not specialization.strip() or len(specialization) > 1000:
+        raise HTTPException(status_code=422, detail='Select valid specializations')
+    if not re.fullmatch(r'\d{1,2}(?:\s*years?)?', experience.strip(), re.IGNORECASE) or int(re.match(r'\d+', experience.strip())[0]) > 60:
+        raise HTTPException(status_code=422, detail='Experience must be between 0 and 60 years')
     if password != confirm_password:
         raise HTTPException(
             status_code=400,
@@ -128,7 +146,7 @@ async def execute_pandit_application(
 
     return PanditApplicationResponse(
         status="success",
-        message="Application received. Our verification team will review it within 24 hours.",
+        message="Application received and awaiting review.",
         application_id=application_id,
         application_status="pending",
     )

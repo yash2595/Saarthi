@@ -4,6 +4,9 @@ from fastapi.concurrency import run_in_threadpool
 
 async def hash_password(plain_password: str) -> str:
     """Hash a plain-text password for safe storage."""
+    if len(plain_password.encode('utf-8')) > 72:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail='Password must be at most 72 UTF-8 bytes')
     def _hash():
         return bcrypt.hashpw(plain_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     return await run_in_threadpool(_hash)
@@ -11,8 +14,13 @@ async def hash_password(plain_password: str) -> str:
 
 async def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Check a plain-text password against a stored hash."""
+    if len(plain_password.encode('utf-8')) > 72:
+        return False
     def _verify():
-        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+        try:
+            return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+        except ValueError:
+            return False
     return await run_in_threadpool(_verify)
 
 from datetime import datetime, timedelta, timezone
@@ -29,6 +37,7 @@ def create_access_token(user_id: str, email: str) -> str:
     payload = {
         "sub": user_id,      # "sub" = subject, the standard JWT field for "who this token is about"
         "email": email,
+        "purpose": "access",
         "exp": expire,       # "exp" = expiry, JWT automatically becomes invalid after this time
     }
 
@@ -40,7 +49,10 @@ def decode_access_token(token: str) -> dict:
 
     Raises JWTError if the token is invalid, tampered with, or expired.
     """
-    return jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    claims = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    if claims.get('purpose', 'access') != 'access' or not isinstance(claims.get('email'), str):
+        raise JWTError('Not an access token')
+    return claims
 
 
 def create_voice_ticket(user_id: str | None = None, role: str = "guest", client_ip: str = "") -> dict:

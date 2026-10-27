@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeNavigationTarget, resolveNavigationMessage, isPanditNavigation, uniqueServiceForBooking } from '../src/lib/conversation-navigation.ts';
+import { normalizeNavigationTarget, resolveNavigationMessage, isPanditNavigation, uniqueServiceForBooking, isGreetingOnlyResponse } from '../src/lib/conversation-navigation.ts';
+
+test('a welcome phrase in a voice navigation or form reply preserves its action', () => {
+  assert.equal(isGreetingOnlyResponse('NAVIGATE', 'NAVIGATE', 'Namaste! Pandit registration khol raha hoon.'), false);
+  assert.equal(isGreetingOnlyResponse('FILL_FORM', 'PANDIT_ONBOARDING', 'Om Namah Shivaya!'), false);
+  assert.equal(isGreetingOnlyResponse(null, 'GREETING', 'Namaste!'), true);
+  assert.equal(isGreetingOnlyResponse(null, 'CHAT', 'Aapki kya seva karun?'), false);
+});
 
 test('Hindi, Hinglish and English requests resolve real page routes', () => {
   for (const [message, path] of [

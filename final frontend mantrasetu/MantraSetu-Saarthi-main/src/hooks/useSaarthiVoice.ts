@@ -545,6 +545,19 @@ export function useSaarthiVoice() {
 
   const enableVoice = useCallback(() => {
     console.log('[Voice] Enabling voice subsystem');
+    // Unlock playback in the user's click, before any ticket/provider awaits.
+    // Creating this only when the first audio frame arrives loses browser activation.
+    try {
+      if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+        const AudioContextType = window.AudioContext || (window as any).webkitAudioContext;
+        audioContextRef.current = new AudioContextType({ sampleRate: 24000 });
+        (window as any)._saarthiAudioContext = audioContextRef.current;
+      }
+      void audioContextRef.current?.resume();
+    } catch {
+      setError('Is browser mein audio playback shuru nahi ho paaya.');
+      return;
+    }
     if (!isVoiceEnabledRef.current) reconnectAttemptsRef.current = 0;
     isVoiceEnabledRef.current = true;
     setIsVoiceEnabled(true);

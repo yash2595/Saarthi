@@ -11,13 +11,13 @@ ROUTES = [
     ('/#contact', 'Contact', r'contact|sampark|support|संपर्क'),
     ('/#mission', 'About', r'about us|about|hamare bare|परिचय'),
 ]
-ACTION = r'open|show|go to|take me|book|booking|find|kholo|khol|khol do|dikhao|banao|bana do|banwani|banani|karna|karni|karwani|chahiye|le chalo|खोलो|खोल|दिखाओ|बनाओ|बनवानी|चाहिए|बुक'
+ACTION = r'open|show|go to|take me|book|booking|find|kholo|khol|khol do|dikhao|banao|bana do|banwani|banani|karna|karni|karwani|chahiye|le chalo|खोलो|खोल|खोल दो|दिखाओ|दिखा दो|बनाओ|बनवानी|चाहिए|बुक|ले चलो'
 NEGATIVE = r"cancel|stop|nahi|nahin|nhi|mat|no|don't|do not|rehne do|chhodo|नहीं|मत|रहने दो"
 
 
 def match(text, pattern):
     # Hindi combining marks must stay within a word; Python's \b splits them.
-    return re.search(r'(?<![\w\u0900-\u097f])(?:' + pattern + r')(?![\w\u0900-\u097f])', text)
+    return re.search(r'(?<![\w\u0900-\u0963\u0966-\u097f])(?:' + pattern + r')(?![\w\u0900-\u0963\u0966-\u097f])', text)
 
 
 def resolve_navigation_target(message: str, pending=None) -> dict:
@@ -84,7 +84,7 @@ def resolve_navigation_target(message: str, pending=None) -> dict:
         for _, _, pattern in ROUTES:
             rest = re.sub(pattern, '', rest)
         rest = re.sub(r'page|please|ya|aur|and|or|पेज|और|या', '', rest)
-        if re.search(r'[\w\u0900-\u097f]', rest):
+        if re.search(r'[\w\u0900-\u0963\u0966-\u097f]', rest):
             return empty
     if len(targets) > 1 or information:
         labels = {route: label for route, label, _ in ROUTES}

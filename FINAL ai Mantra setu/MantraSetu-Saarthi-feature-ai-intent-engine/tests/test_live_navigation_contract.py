@@ -14,6 +14,7 @@ from app.orchestrator.provider_manager import ProviderManager
 @pytest.mark.parametrize('message,target', [
     ('Kundali page kholo', '/kundali-creation'), ('कुंडली खोलो', '/kundali-creation'),
     ('mujhe kundali banwani hai', '/kundali-creation'),
+    ('मुझे कुंडली पेज पर ले चलो।', '/kundali-creation'),
     ('Puja dikhao', '/puja'), ('पूजा खोलो', '/puja'), ('havan kholo', '/puja'),
     ('Muhurat kholo', '/muhurat-finder'), ('puja ka muhurat kholo', '/muhurat-finder'),
     ('signup kholo', '/sign-up'), ('register', '/sign-up'),

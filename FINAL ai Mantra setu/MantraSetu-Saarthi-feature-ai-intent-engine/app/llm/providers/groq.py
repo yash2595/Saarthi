@@ -38,7 +38,7 @@ class GroqProvider(BaseLLMProvider):
             or (self._settings.groq_api_key.get_secret_value() if hasattr(self._settings, 'groq_api_key') and self._settings.groq_api_key else None)
             or os.getenv("GROQ_API_KEY", "")
         )
-        self._model = model or os.getenv("GROQ_LLM_MODEL", "llama-3.3-70b-versatile")
+        self._model = model or os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-20b")
 
         if not self._api_key:
             logger.warning("GROQ_API_KEY is not set.")
@@ -123,6 +123,13 @@ class GroqProvider(BaseLLMProvider):
                 kw["max_tokens"] = max_toks
             if request.stop:
                 kw["stop"] = request.stop
+
+            if self._model.startswith('openai/gpt-oss-'):
+                # Reasoning consumes completion tokens too; tiny classification budgets
+                # otherwise finish before producing any user-facing JSON/text.
+                kw.pop('max_tokens', None)
+                kw['max_completion_tokens'] = max(512, max_toks)
+                kw['reasoning_effort'] = 'low'
 
             response = await asyncio.wait_for(
                 client.chat.completions.create(**kw),
@@ -242,6 +249,11 @@ class GroqProvider(BaseLLMProvider):
                 kw["max_tokens"] = max_toks
             if request.stop:
                 kw["stop"] = request.stop
+
+            if self._model.startswith('openai/gpt-oss-'):
+                kw.pop('max_tokens', None)
+                kw['max_completion_tokens'] = max(512, max_toks)
+                kw['reasoning_effort'] = 'low'
 
             stream = await asyncio.wait_for(
                 client.chat.completions.create(**kw),

@@ -76,6 +76,22 @@ class TestGroqLLMContract(unittest.TestCase):
         self.assertEqual(res.model, "llama-3.3-70b-versatile")
         self.assertEqual(res.usage.total_tokens, 65)
 
+    @patch('groq.AsyncGroq')
+    def test_reasoning_model_reserves_budget_for_visible_reply(self, client_class):
+        from types import SimpleNamespace
+        client = MagicMock()
+        client_class.return_value = client
+        client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='Namaste'), finish_reason='stop')],
+            usage=None))
+        provider = GroqProvider(api_key='unit-test-only', model='openai/gpt-oss-20b')
+        result = asyncio.run(provider.generate(LLMRequest(prompt='Namaste', max_tokens=40)))
+        assert result.content == 'Namaste'
+        arguments = client.chat.completions.create.call_args.kwargs
+        assert arguments['reasoning_effort'] == 'low'
+        assert arguments['max_completion_tokens'] >= 512
+        assert 'max_tokens' not in arguments
+
     @patch("groq.AsyncGroq")
     def test_5_json_response_parsed(self, mock_async_groq_cls):
         """Test JSON structured output parsing compatibility."""

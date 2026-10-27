@@ -54,6 +54,8 @@ uploads/
 *.jpeg
 *.jpg
 *.png
+!final frontend mantrasetu/MantraSetu-Saarthi-main/public/**/*.png
+!final frontend mantrasetu/MantraSetu-Saarthi-main/public/*.jpg
 
 # TTS audio cache (binary, generated at runtime)
 **/tts/.cache/
@@ -80,3 +82,5 @@ verify_fixes.py
 Thumbs.db
 .emergent/
 **/.emergent/
+.vercel/
+**/.vercel/

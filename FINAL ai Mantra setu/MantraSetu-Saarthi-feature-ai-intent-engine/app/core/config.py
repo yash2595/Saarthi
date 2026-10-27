@@ -61,7 +61,7 @@ class Settings(BaseSettings):
         ]
         if self.cors_origins:
             prod_origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
-            return list(dict.fromkeys(default_dev + prod_origins))
+            return list(dict.fromkeys(prod_origins))
         return default_dev
 
     application: ApplicationSettings = Field(default_factory=ApplicationSettings)

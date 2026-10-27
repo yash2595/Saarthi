@@ -16,10 +16,10 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRY_MINUTES: int = 60 * 24
-    VOICE_TICKET_SECRET: str = "mantrasetu_voice_ticket_secret_shared_2026"
+    VOICE_TICKET_SECRET: str
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
-    ADMIN_SECRET_KEY: str = "mantrasetu-admin-secret"
+    ADMIN_SECRET_KEY: str
     CORS_ORIGINS: str = ""
     
     # Email Settings
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
         ]
         if self.CORS_ORIGINS:
             prod_origins = [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
-            return list(dict.fromkeys(default_dev + prod_origins))
+            return list(dict.fromkeys(prod_origins))
         return default_dev
 
     class Config:

@@ -10,7 +10,7 @@ from app.core.config import settings
 MONGODB_URI = settings.MONGODB_URI
 DATABASE_NAME = settings.DATABASE_NAME
 
-client = AsyncIOMotorClient(MONGODB_URI)
+client = AsyncIOMotorClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
 
 database = client[DATABASE_NAME]
 

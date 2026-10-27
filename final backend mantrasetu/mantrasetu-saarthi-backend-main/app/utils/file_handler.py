@@ -3,7 +3,7 @@ import uuid
 import aiofiles
 from fastapi import HTTPException, UploadFile
 
-UPLOAD_DIR = "uploads"
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".webp", ".mp4", ".webm", ".mov", ".avi", ".mkv"}
 
 async def save_uploaded_file(file: UploadFile, subfolder: str) -> str:
@@ -27,4 +27,4 @@ async def save_uploaded_file(file: UploadFile, subfolder: str) -> str:
         while chunk := await file.read(1024 * 1024):
             await buffer.write(chunk)
 
-    return filepath.replace("\\", "/")
+    return f"uploads/{subfolder}/{filename}"

@@ -12,11 +12,16 @@ from app.api.websocket import ws_router
 from app.core.bootstrap import async_bootstrap_application, bootstrap_application, shutdown_application
 from app.core.config import settings
 from app.core.logging import configure_logging
+from app.core.setup_guard import ConfigurationGuard, missing_configuration
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage application startup, runtime bootstrap, and graceful shutdown around FastAPI's lifespan."""
+    app.state.missing_configuration = missing_configuration()
+    if app.state.missing_configuration:
+        yield
+        return
     from app.database.connection import init_db_client, close_db_client
     init_db_client()
     await async_bootstrap_application(app)
@@ -41,6 +46,15 @@ def create_app() -> FastAPI:
         debug=settings.debug,
         lifespan=_lifespan,
     )
+    application.state.missing_configuration = missing_configuration()
+    application.add_middleware(ConfigurationGuard, application=application)
+
+    @application.get("/live", tags=["Health"])
+    async def liveness():
+        return {
+            "status": "running",
+            "configured": not bool(application.state.missing_configuration),
+        }
 
     from fastapi.middleware.cors import CORSMiddleware
 

@@ -14,13 +14,19 @@ from app.api.routes.contact import router as contact_router
 from app.api.routes.voice import router as voice_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
+from pathlib import Path
+from app.utils.file_handler import UPLOAD_DIR
+import os
+import asyncio
+from fastapi.responses import JSONResponse
 
 print("Application Name:", settings.APP_NAME)
 print("Version:", settings.APP_VERSION)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await check_database_connection()
+    if os.getenv("RENDER") != "true" or os.getenv("MONGODB_URI"):
+        await check_database_connection()
     yield
 
 app = FastAPI(
@@ -29,7 +35,17 @@ app = FastAPI(
     description="Backend API for AI-powered Voice Navigation System",
     lifespan=lifespan
 )
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+@app.middleware("http")
+async def require_database_configuration(request, call_next):
+    public_paths = {"/", "/health", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"}
+    if os.getenv("RENDER") == "true" and not os.getenv("MONGODB_URI") and request.url.path not in public_paths:
+        return JSONResponse(
+            {"status": "configuration_required", "missing": ["MONGODB_URI"]}, status_code=503
+        )
+    return await call_next(request)
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,6 +68,15 @@ app.include_router(voice_router)
 
 from app.api.routes.admin import router as admin_router
 app.include_router(admin_router)
+
+@app.get("/ready", tags=["Health"])
+async def readiness():
+    from app.database.mongodb import client
+    try:
+        await asyncio.wait_for(client.admin.command("ping"), timeout=3)
+        return {"status": "ready", "database": "connected"}
+    except Exception:
+        return JSONResponse({"status": "not_ready", "database": "unavailable"}, status_code=503)
 
 @app.get("/")
 def home():

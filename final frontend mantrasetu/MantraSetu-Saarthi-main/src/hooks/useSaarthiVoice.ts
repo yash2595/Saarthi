@@ -4,6 +4,7 @@ import { useNavigate, useLocation, useNavigationType } from 'react-router-dom';
 import { recordNavigation, canGoBack, type NavigationHistory } from '../lib/navigation-history';
 import { getPersistableData } from '../utils/formSecurity';
 import apiClient from '../api/api';
+import { voiceTicketErrorMessage } from '../lib/voice-session-status';
 import { isPanditNavigation, normalizeNavigationTarget, isGreetingOnlyResponse } from '../lib/conversation-navigation';
 
 /** Shared sanitization helper to guarantee no passwords/credentials enter sessionStorage */
@@ -319,6 +320,9 @@ export function useSaarthiVoice() {
   const [isConnected, setIsConnected] = useState(false);
   const [isSessionReady, setIsSessionReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isVoiceEnabled, setIsVoiceEnabled] = useState(false);
+  const [isMicrophoneReady, setIsMicrophoneReady] = useState(false);
+  const connectionAttemptRef = useRef(0);
   const [isTtsPlaying, setIsTtsPlaying] = useState(false);
   const [ttsPlaybackId, setTtsPlaybackId] = useState(0);
   const [isGreetingTtsSpeaking, setIsGreetingTtsSpeaking] = useState(false);
@@ -450,6 +454,9 @@ export function useSaarthiVoice() {
   const disableVoice = useCallback(() => {
     console.log('[Voice] Disabling voice subsystem: stopping mic, closing WS, purging audio queue');
     isVoiceEnabledRef.current = false;
+    connectionAttemptRef.current += 1;
+    setIsVoiceEnabled(false);
+    setIsMicrophoneReady(false);
     isConnectingRef.current = false;
     setIsConnected(false);
     updateSessionReady(false);
@@ -538,7 +545,9 @@ export function useSaarthiVoice() {
 
   const enableVoice = useCallback(() => {
     console.log('[Voice] Enabling voice subsystem');
+    if (!isVoiceEnabledRef.current) reconnectAttemptsRef.current = 0;
     isVoiceEnabledRef.current = true;
+    setIsVoiceEnabled(true);
     setError(null);
     if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
       connectWebSocketRef.current();
@@ -1384,20 +1393,22 @@ export function useSaarthiVoice() {
     }
 
     isConnectingRef.current = true;
+    const attempt = ++connectionAttemptRef.current;
     hasAnnouncedRateLimitRef.current = false;
 
     // ── 1. Fetch Ephemeral Voice Ticket from Backend ──
     let ticket = '';
     try {
       console.log('[Voice] Fetching ephemeral voice ticket from backend (/voice/ticket)...');
-      const ticketRes = await apiClient.post('/voice/ticket');
-      if (!isVoiceEnabledRef.current) { isConnectingRef.current = false; return; }
+      const ticketRes = await apiClient.post('/voice/ticket', undefined, { timeout: 60000 });
+      if (!isVoiceEnabledRef.current || attempt !== connectionAttemptRef.current) return;
       ticket = ticketRes.data?.ticket;
       console.log('[Voice] Voice ticket obtained successfully, type:', ticketRes.data?.type);
     } catch (ticketErr: any) {
+      if (attempt !== connectionAttemptRef.current || !isVoiceEnabledRef.current) return;
       console.error('[Voice] Failed to obtain voice ticket from backend:', ticketErr);
       isConnectingRef.current = false;
-      if (isVoiceEnabledRef.current) setError('Voice service abhi available nahi hai. Kripya thodi der baad koshish karein.');
+      if (isVoiceEnabledRef.current) setError(voiceTicketErrorMessage(ticketErr.data || ticketErr.response?.data, ticketErr.code));
       return;
     }
 
@@ -1422,7 +1433,12 @@ export function useSaarthiVoice() {
         wsRef.current.close();
         wsRef.current = null;
         
-        // Trigger a fresh reconnect attempt
+        if (!isVoiceEnabledRef.current || reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+          if (isVoiceEnabledRef.current) setError('Voice connection ka samay khatam ho gaya. Dobara try karein.');
+          return;
+        }
+        reconnectAttemptsRef.current += 1;
+        // Trigger a bounded fresh reconnect attempt.
         const delay = 1000;
         console.log(`[Voice] Scheduling WebSocket auto-reconnect after timeout in ${delay} ms`);
         if (reconnectTimerRef.current) {
@@ -1432,7 +1448,7 @@ export function useSaarthiVoice() {
           connectWebSocket();
         }, delay);
       }
-    }, 5000);
+    }, 45000);
 
     console.log('[Voice] Opening WebSocket connection to:', wsUrl.replace(/ticket=[^&]+/, 'ticket=[PROTECTED]'));
     const ws = new WebSocket(wsUrl);
@@ -1445,13 +1461,14 @@ export function useSaarthiVoice() {
     };
 
     ws.onopen = () => {
+      if (!isVoiceEnabledRef.current || attempt !== connectionAttemptRef.current) { ws.close(); return; }
       console.log('[Voice] WebSocket Connected successfully.');
       isConnectingRef.current = false;
       if (connectionTimeoutRef.current) {
         clearTimeout(connectionTimeoutRef.current);
         connectionTimeoutRef.current = null;
       }
-      reconnectAttemptsRef.current = 0;
+      setError(null);
       setIsConnected(true);
       updateSessionReady(false);
 
@@ -1576,6 +1593,7 @@ export function useSaarthiVoice() {
 
           // ----------- CONNECTED handling -----------------------------------
           if (msg.type === 'CONNECTED') {
+            reconnectAttemptsRef.current = 0;
             console.log('[Voice] CONNECTED received from backend. Session handshake READY.');
             updateSessionReady(true);
             return;
@@ -2665,6 +2683,7 @@ export function useSaarthiVoice() {
     ws.onclose = (event: CloseEvent) => {
       console.log(`[Voice] WebSocket Closed (code: ${event.code}, reason: ${event.reason}, clean: ${event.wasClean})`);
       setIsConnected(false);
+      setIsMicrophoneReady(false);
       updateSessionReady(false);
 
       // BUG-11.1 FIX: If WS closes while stuck in 'thinking', recover state immediately
@@ -2736,6 +2755,8 @@ export function useSaarthiVoice() {
             connectWebSocket();
           }
         }, delay);
+      } else if (isVoiceEnabledRef.current) {
+        setError('Voice session band ho gayi hai. Dobara connect karein.');
       }
     };
 
@@ -3044,6 +3065,11 @@ export function useSaarthiVoice() {
   useEffect(() => {
     console.log('[Voice] mic useEffect triggered | isConnected:', isConnected, '| micStreamActive:', !!(micStreamRef.current && micStreamRef.current.active));
     if (!isConnected || !isVoiceEnabledRef.current) return;
+    const micAttempt = connectionAttemptRef.current;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('Is browser mein microphone available nahi hai. HTTPS par supported browser use karein.');
+      return;
+    }
 
     if (micStreamRef.current && micStreamRef.current.active && processorRef.current) {
       console.log('[Voice] Persistent microphone stream is ALREADY active. Preserving active stream.');
@@ -3061,7 +3087,7 @@ export function useSaarthiVoice() {
       } as MediaTrackConstraints
     })
       .then(stream => {
-        if (!isVoiceEnabledRef.current || wsRef.current?.readyState !== WebSocket.OPEN) {
+        if (!isVoiceEnabledRef.current || micAttempt !== connectionAttemptRef.current || wsRef.current?.readyState !== WebSocket.OPEN) {
           stream.getTracks().forEach(track => track.stop());
           return;
         }
@@ -3120,6 +3146,7 @@ export function useSaarthiVoice() {
         const sourceNode = micAudioCtx.createMediaStreamSource(stream);
         const processor = micAudioCtx.createScriptProcessor(4096, 1, 1);
         processorRef.current = processor;
+        setIsMicrophoneReady(true);
         let chunkCounter = 0;
 
         processor.onaudioprocess = (event) => {
@@ -3437,7 +3464,11 @@ export function useSaarthiVoice() {
       })
       .catch(err => {
         console.error('[Voice] Persistent Microphone error', err);
-        if (isVoiceEnabledRef.current) setError('Could not access microphone');
+        if (!isVoiceEnabledRef.current || micAttempt !== connectionAttemptRef.current) return;
+        setIsMicrophoneReady(false);
+        setError(err?.name === 'NotAllowedError'
+          ? 'Microphone ki permission nahi mili. Browser settings mein allow karke dobara try karein.'
+          : 'Microphone shuru nahi ho paaya. Apna microphone check karke dobara try karein.');
         setSaarthiState('idle');
       });
 
@@ -3512,5 +3543,5 @@ export function useSaarthiVoice() {
     setSaarthiState('listening');
   }, [markTtsPlaybackStopped, setSaarthiState]);
 
-  return { isConnected, isSessionReady, error, isTtsPlaying, ttsPlaybackId, isGreetingTtsSpeaking, stopSpeaking, disableVoice, enableVoice };
+  return { isConnected, isSessionReady, isVoiceEnabled, isMicrophoneReady, error, isTtsPlaying, ttsPlaybackId, isGreetingTtsSpeaking, stopSpeaking, disableVoice, enableVoice };
 }

@@ -7,9 +7,13 @@ import { SaarthiAvatar } from './SaarthiAvatar';
 import { SaarthiSpeechBubble } from './SaarthiSpeechBubble';
 import { ChoicePopup } from './ChoicePopup';
 import { useSaarthiVoice } from '../../hooks/useSaarthiVoice';
+import { voiceSessionStatus } from '@/lib/voice-session-status';
 
 export const SaarthiController: React.FC = () => {
-  const { isTtsPlaying, ttsPlaybackId, isGreetingTtsSpeaking, error } = useSaarthiVoice();
+  const { isTtsPlaying, ttsPlaybackId, isGreetingTtsSpeaking, error, isVoiceEnabled,
+    isConnected, isSessionReady, isMicrophoneReady, disableVoice } = useSaarthiVoice();
+  const voiceStatus = voiceSessionStatus({ enabled: isVoiceEnabled, connected: isConnected,
+    sessionReady: isSessionReady, microphoneReady: isMicrophoneReady, error });
   const location = useLocation();
 
   useEffect(() => {
@@ -30,9 +34,18 @@ export const SaarthiController: React.FC = () => {
     showSpeechBubble,
     minimizeSaarthi,
     toggleMinimized,
+    continueWithSaarthi,
+    continueManually,
+    setSaarthiState,
   } = useSaarthi();
 
+  useEffect(() => {
+    if (voiceStatus.phase === 'failed') setSaarthiState('idle');
+  }, [voiceStatus.phase, setSaarthiState]);
+
   const isAvatarVisible = onboardingPhase !== 'loading';
+  const avatarState = isTtsPlaying || voiceStatus.phase === 'ready' ? state
+    : voiceStatus.phase === 'connecting' || voiceStatus.phase === 'microphone' ? 'thinking' : 'idle';
 
   return (
     <>
@@ -55,7 +68,7 @@ export const SaarthiController: React.FC = () => {
                     state={
                       onboardingPhase === 'avatar_enter' ? 'enter'
                       : onboardingPhase === 'avatar_bow' ? 'greeting'
-                      : state
+                      : avatarState
                     }
                     minimized={false}
                     isTtsPlaying={isTtsPlaying}
@@ -80,7 +93,7 @@ export const SaarthiController: React.FC = () => {
 
               {/* Spoken Dialogue Text Bubble */}
               <AnimatePresence>
-                {showSpeechBubble && dialogueText && (
+                {showSpeechBubble && dialogueText && (voiceStatus.phase === 'ready' || voiceStatus.phase === 'off') && (
                   <SaarthiSpeechBubble text={dialogueText} needsRepeat={needsRepeat} />
                 )}
               </AnimatePresence>
@@ -89,8 +102,12 @@ export const SaarthiController: React.FC = () => {
               <AnimatePresence>
                 {showChoicePopup && <ChoicePopup />}
               </AnimatePresence>
-              {!showChoicePopup && error && <div className="rounded-xl bg-[#fffdf9] p-4 text-sm text-[#703b20]" role="status">
-                <p>AI voice abhi connect nahi ho paaya. Thodi der baad dobara try karein, ya website ke menu se aage badhein.</p>
+              {!showChoicePopup && voiceStatus.phase !== 'ready' && voiceStatus.phase !== 'off' && <div className="rounded-xl bg-[#fffdf9] p-4 text-sm text-[#703b20]" role="status" data-testid="saarthi-voice-status">
+                <p>{voiceStatus.message}</p>
+                <div className="flex flex-wrap gap-3 mt-3">
+                  {voiceStatus.phase === 'failed' && <button type="button" className="font-semibold underline" onClick={() => { disableVoice(); continueWithSaarthi(); }}>Dobara connect karein</button>}
+                  <button type="button" className="font-semibold underline" onClick={continueManually}>Continue Manually</button>
+                </div>
               </div>}
             </div>
           </motion.div>
@@ -108,14 +125,14 @@ export const SaarthiController: React.FC = () => {
         >
           {/* Spoken Dialogue Text Bubble (Floating above avatar) */}
           <AnimatePresence>
-            {showSpeechBubble && dialogueText && (
+            {showSpeechBubble && dialogueText && voiceStatus.phase === 'ready' && (
               <div className="absolute bottom-full left-4 mb-4 origin-bottom-left w-[300px] sm:w-[340px] max-w-[calc(100vw-3rem)]">
                 <SaarthiSpeechBubble text={dialogueText} needsRepeat={needsRepeat} />
               </div>
             )}
           </AnimatePresence>
           <SaarthiAvatar
-            state={state}
+            state={avatarState}
             minimized={true}
             onClick={toggleMinimized}
             isTtsPlaying={isTtsPlaying}

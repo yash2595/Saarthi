@@ -44,6 +44,7 @@ apiClient.interceptors.response.use(
     }
 
     const apiError = new Error(errorMessage);
+    (apiError as any).code = error.code;
     (apiError as any).status = error.response?.status;
     (apiError as any).statusCode = error.response?.status;
     (apiError as any).data = error.response?.data;

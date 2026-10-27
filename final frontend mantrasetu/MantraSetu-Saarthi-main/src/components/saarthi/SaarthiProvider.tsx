@@ -91,7 +91,7 @@ export const SaarthiProvider: React.FC<SaarthiProviderProps> = ({ children }) =>
         console.log('[Provider] Preserving existing dynamic backend greeting text:', prevText);
         return prevText;
       }
-      return 'जी बताइए,\nआज मैं आपकी क्या सहायता कर सकता हूँ?';
+      return 'Saarthi se connection ho raha hai…';
     });
 
     setState((prevState) => {
@@ -136,15 +136,9 @@ export const SaarthiProvider: React.FC<SaarthiProviderProps> = ({ children }) =>
 
   // ── REOPEN CONTROL (When floating avatar is clicked later) ───
   const reopenSaarthi = useCallback(() => {
-    console.log('[Provider] reopenSaarthi invoked');
-    // Return to center, skip onboarding, skip "Jai Bholenath", simply say "जी बताइए।"
-    setIsMinimized(false);
-    setShowChoicePopup(false);
-    setShowSpeechBubble(true);
-    setDialogueText('जी बताइए।');
-    setState('listening');
-    setOnboardingPhase('saarthi_listening');
-  }, []);
+    // A manual session has voice disabled; reopening must start its connection too.
+    continueWithSaarthi();
+  }, [continueWithSaarthi]);
 
   const toggleMinimized = useCallback(() => {
     if (isMinimized) {

@@ -101,7 +101,7 @@ export const saarthiAvatarVariants: Variants = {
     },
   },
   minimized: {
-    scale: 0.46,
+    scale: 1,
     opacity: 1,
     transition: {
       duration: 0.6,
@@ -129,8 +129,8 @@ export const SaarthiAvatar: React.FC<SaarthiAvatarProps> = ({
   const mediaStyle: React.CSSProperties = {
     width: 'auto',
     height: 'auto',
-    maxWidth: minimized ? '300px' : 'min(70vw, 320px)',
-    maxHeight: minimized ? '300px' : 'min(38vh, 420px)',
+    maxWidth: minimized ? '76px' : 'min(70vw, 320px)',
+    maxHeight: minimized ? '132px' : 'min(38vh, 420px)',
     objectFit: 'contain',
   };
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -164,8 +164,14 @@ export const SaarthiAvatar: React.FC<SaarthiAvatarProps> = ({
     <div
       className={`relative flex items-center justify-center cursor-pointer select-none ${className}`}
       onClick={onClick}
-      role="button"
-      tabIndex={0}
+      onKeyDown={(event) => {
+        if (onClick && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          onClick();
+        }
+      }}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
       aria-label={`Saarthi Avatar Body (${state} state)`}
     >
       {/* Saarthi avatar asset shell */}

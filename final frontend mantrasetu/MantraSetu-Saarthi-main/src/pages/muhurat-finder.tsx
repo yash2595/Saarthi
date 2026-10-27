@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { SiteHeader, SiteFooter, Modal, SunriseIcon, FaqAccordion, type ModalType } from '@/components/shared';
 import { muhuratService, type TimingCardItem } from '@/services/muhurat.service';
+import { localDateInputValue } from '@/lib/service-results';
 
 const faqItems = [
   {
@@ -40,16 +41,19 @@ export default function MuhuratFinder() {
   const [modal, setModal] = useState<ModalType>(null);
   const [eventType, setEventType] = useState('griha-pravesh');
   const [city, setCity] = useState('new-delhi');
-  const [date, setDate] = useState('2026-08-12');
+  const [date, setDate] = useState(localDateInputValue);
   const [searched, setSearched] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [backendTimings, setBackendTimings] = useState<TimingCardItem[] | null>(null);
+  const [sampleTimings, setSampleTimings] = useState(false);
 
   const handleSearch = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSubmitting(true);
     setApiError(null);
+    setSearched(false);
+    setBackendTimings(null);
 
     try {
       const response = await muhuratService.findMuhurat({
@@ -58,16 +62,15 @@ export default function MuhuratFinder() {
         date,
       });
 
-      if (response.timings && response.timings.length > 0) {
-        setBackendTimings(response.timings);
-      } else {
-        setBackendTimings(null);
-      }
+      const timings = response.timings?.filter(item => item.time_range || item.timeRange || item.time);
+      if (!timings?.length) throw new Error('No timings were returned. Please try another date or contact a panditji.');
+      setBackendTimings(timings);
+      setSampleTimings(response.calculation_status === 'sample');
       setSearched(true);
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : 'Unable to calculate Muhurat. Please try again.';
       setApiError(errorMessage);
-      setSearched(true);
+      setSearched(false);
     } finally {
       setIsSubmitting(false);
     }
@@ -84,27 +87,6 @@ export default function MuhuratFinder() {
     : city === 'mumbai' ? 'Mumbai'
     : city === 'bengaluru' ? 'Bengaluru'
     : 'Jaipur';
-
-  const displayTimings = backendTimings || [
-    {
-      label: 'Most auspicious',
-      time_range: '06:18 AM – 07:54 AM',
-      description: 'Brahma Muhurat · A peaceful window for a sacred start',
-      is_featured: true,
-    },
-    {
-      label: 'Morning window',
-      time_range: '09:42 AM – 11:16 AM',
-      description: 'Favourable for preparations and first steps',
-      is_featured: false,
-    },
-    {
-      label: 'Evening window',
-      time_range: '04:32 PM – 06:08 PM',
-      description: 'A gentle closing window before sunset',
-      is_featured: false,
-    },
-  ];
 
   return (
     <div className="page-shell">
@@ -172,7 +154,7 @@ export default function MuhuratFinder() {
                   <label htmlFor="muhurat-date">Preferred date</label>
                   <input id="muhurat-date" type="date" value={date}
                     onChange={(e) => { setDate(e.target.value); setSearched(false); }}
-                    data-testid="input-muhurat-date" />
+                    min={localDateInputValue()} required data-testid="input-muhurat-date" />
                 </div>
                 <button className="button button-primary form-submit" type="submit" disabled={isSubmitting} data-testid="button-find-muhurat">
                   {isSubmitting ? (
@@ -202,16 +184,16 @@ export default function MuhuratFinder() {
                   <>
                     <div className="muhurat-result-head">
                       <div>
-                        <span className="section-kicker">Recommended timings</span>
+                        <span className="section-kicker">{sampleTimings ? 'Sample timings — illustration only' : 'Recommended timings'}</span>
                         <h3>{eventLabel} in {cityLabel}</h3>
                       </div>
                       <span className="muhurat-date">{date}</span>
                     </div>
                     <div className="timing-list">
-                      {displayTimings.map((item, idx) => {
+                      {(backendTimings || []).map((item, idx) => {
                         const isFeatured = item.is_featured || item.isFeatured || idx === 0;
                         const label = item.label || (idx === 0 ? 'Most auspicious' : idx === 1 ? 'Morning window' : 'Evening window');
-                        const timeStr = item.time_range || item.timeRange || '06:18 AM – 07:54 AM';
+                        const timeStr = item.time_range || item.timeRange || item.time;
                         return (
                           <article className={`timing-card ${isFeatured ? 'featured' : ''}`} key={idx}>
                             <div className="timing-icon">

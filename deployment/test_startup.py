@@ -66,3 +66,15 @@ def test_required_frontend_assets_are_present():
     for state in ('idle', 'greeting', 'listening', 'thinking'):
         asset = FRONTEND / 'public/assets/saarthi' / f'{state}-avatar.png'
         assert asset.read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
+
+
+def test_muhurat_placeholder_timings_are_identified_as_samples():
+    run_service("final backend mantrasetu/mantrasetu-saarthi-backend-main", '''
+import asyncio
+from app.schemas.muhurat_schema import MuhuratRequest
+from app.services.muhurat_service import execute_find_muhurat
+response = asyncio.run(execute_find_muhurat(MuhuratRequest(
+    event_type='griha-pravesh', city='new-delhi', date='2026-10-27')))
+assert response.calculation_status == 'sample'
+assert response.timings
+''')

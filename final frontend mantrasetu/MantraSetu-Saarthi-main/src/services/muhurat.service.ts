@@ -11,12 +11,14 @@ export interface TimingCardItem {
   label?: string;
   time_range?: string;
   timeRange?: string;
+  time?: string;
   description: string;
   is_featured?: boolean;
   isFeatured?: boolean;
 }
 
 export interface MuhuratFindResponse {
+  calculation_status?: 'sample' | 'calculated';
   event_label?: string;
   eventLabel?: string;
   city_label?: string;

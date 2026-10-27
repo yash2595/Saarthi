@@ -142,14 +142,14 @@ export default function Login() {
                 <div className="field">
                   <label htmlFor="login-password">
                     Password
-                    <a
-                      href="#"
-                      onClick={(e) => e.preventDefault()}
-                      style={{ float: 'right', color: '#d96620', fontSize: '0.72rem', fontWeight: 700, textDecoration: 'none' }}
+                    <button
+                      type="button"
+                      onClick={() => setErrors({ api: 'Password reset is not available yet. Please contact the MantraSetu team for help.' })}
+                      style={{ float: 'right', color: '#d96620', fontSize: '0.72rem', fontWeight: 700, textDecoration: 'none', border: 0, background: 'transparent', padding: 0, cursor: 'pointer' }}
                       data-testid="link-forgot-password"
                     >
                       Forgot password?
-                    </a>
+                    </button>
                   </label>
                   <div style={{ position: 'relative' }}>
                     <input
@@ -217,6 +217,7 @@ export default function Login() {
               </form>
             )}
 
+            {import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() && <>
             <div className="auth-divider">or continue with</div>
             <div className="auth-google-btn-wrapper" style={{ display: 'flex', justifySelf: 'stretch', width: '100%' }}>
               <GoogleLogin
@@ -228,6 +229,7 @@ export default function Login() {
                 width="100%"
               />
             </div>
+            </>}
 
             <p style={{ marginTop: '1.2rem', textAlign: 'center', fontSize: '0.82rem', color: '#68645f' }}>
               Don't have an account? <Link to="/sign-up">Create one for free</Link>

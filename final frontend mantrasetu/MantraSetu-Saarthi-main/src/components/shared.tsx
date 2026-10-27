@@ -322,7 +322,7 @@ export function SiteFooter() {
           </div>
         </nav>
         <div className="footer-bottom">
-          <span>© 2025 MantraSetu. Rooted in faith, made with care.</span>
+          <span>© {new Date().getFullYear()} MantraSetu. Rooted in faith, made with care.</span>
           <span>Privacy · Terms</span>
         </div>
       </div>
@@ -331,27 +331,26 @@ export function SiteFooter() {
 }
 
 export function Modal({ modal, onClose }: { modal: ModalType; onClose: () => void }) {
-  if (!modal) return null;
   const isAssistant = modal === 'assistant';
   const isLogin = modal === 'login';
   const isSignup = modal === 'signup';
 
   const [modalName, setModalName] = useState('');
   const [modalEmail, setModalEmail] = useState('');
+  const [modalPhone, setModalPhone] = useState('');
   const [modalPassword, setModalPassword] = useState('');
   const [modalError, setModalError] = useState('');
   const [modalSubmitting, setModalSubmitting] = useState(false);
   const { login } = useAuth();
+  if (!modal) return null;
 
   const handleModalAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setModalError('');
     setModalSubmitting(true);
-    console.log(`[FRONTEND-MODAL] Submitting ${isLogin ? 'Login' : 'Signup'} for email: ${modalEmail}`);
     try {
       if (isLogin) {
         const res = await authService.login({ email: modalEmail, password: modalPassword });
-        console.log('[FRONTEND-MODAL] Login API response:', res);
         if (res.access_token) {
           login(res.access_token, res.user);
           onClose();
@@ -360,11 +359,10 @@ export function Modal({ modal, onClose }: { modal: ModalType; onClose: () => voi
         const res = await authService.signup({
           name: modalName,
           email: modalEmail,
-          phone: '9876543210',
+          phone: modalPhone.trim(),
           password: modalPassword,
           confirm_password: modalPassword,
         });
-        console.log('[FRONTEND-MODAL] Signup API response:', res);
         if (res.access_token) {
           login(res.access_token, res.user || { name: modalName, email: modalEmail });
         }
@@ -392,11 +390,7 @@ export function Modal({ modal, onClose }: { modal: ModalType; onClose: () => voi
             <h2 id="modal-title">Saarthi is finding its way to you.</h2>
             <p>We are preparing a thoughtful AI guide for everyday spiritual questions and practices.</p>
             <div className="modal-note"><CircleHelp size={18} /> In the meantime, tell us what you would love Saarthi to help with.</div>
-            <form className="modal-form" onSubmit={(e) => { e.preventDefault(); onClose(); }} style={{ marginTop: '1rem' }}>
-              <div className="field"><label htmlFor="saarthi-q">What is on your mind?</label>
-                <textarea id="saarthi-q" required placeholder="Ask a question or share an idea..." /></div>
-              <button className="button button-primary" type="submit">Share with Saarthi <ArrowRight size={15} /></button>
-            </form>
+            <p>Use the Saarthi assistant on the page to start a conversation when it is available.</p>
           </>
         ) : isLogin || isSignup ? (
           <>
@@ -413,6 +407,8 @@ export function Modal({ modal, onClose }: { modal: ModalType; onClose: () => voi
                 <input id="modal-name" value={modalName} onChange={(e) => setModalName(e.target.value)} required placeholder="Your name" /></div>}
               <div className="field"><label htmlFor="modal-email">Email address</label>
                 <input id="modal-email" type="email" value={modalEmail} onChange={(e) => setModalEmail(e.target.value)} required placeholder="you@example.com" /></div>
+              {isSignup && <div className="field"><label htmlFor="modal-phone">Mobile number</label>
+                <input id="modal-phone" type="tel" inputMode="numeric" pattern="[6-9][0-9]{9}" value={modalPhone} onChange={(e) => setModalPhone(e.target.value)} required placeholder="10-digit mobile number" /></div>}
               <div className="field"><label htmlFor="modal-password">Password</label>
                 <input id="modal-password" type="password" value={modalPassword} onChange={(e) => setModalPassword(e.target.value)} required placeholder="Enter your password" /></div>
               <button className="button button-primary" type="submit" disabled={modalSubmitting}>
@@ -422,14 +418,11 @@ export function Modal({ modal, onClose }: { modal: ModalType; onClose: () => voi
           </>
         ) : (
           <>
-            <span className="section-kicker">Coming soon</span>
-            <h2 id="modal-title">A beautiful ritual, made easy.</h2>
-            <p>Our booking experience is being prepared with the same care as the ceremonies it holds. Leave your email and we will let you know when it opens.</p>
-            <form className="modal-form" onSubmit={(e) => { e.preventDefault(); onClose(); }}>
-              <div className="field"><label htmlFor="launch-email">Email address</label>
-                <input id="launch-email" type="email" required placeholder="you@example.com" /></div>
-              <button className="button button-primary" type="submit">Keep me posted <ArrowRight size={15} /></button>
-            </form>
+            <span className="section-kicker">Plan your ceremony</span>
+            <h2 id="modal-title">Find the right service for you.</h2>
+            <p>Browse our pujas or contact the team about a personalised consultation.</p>
+            <Link className="button button-primary" to="/puja" onClick={onClose}>Explore pujas <ArrowRight size={15} /></Link>
+            <a className="button button-light" href="/#contact" onClick={onClose}>Contact the team</a>
           </>
         )}
       </div>

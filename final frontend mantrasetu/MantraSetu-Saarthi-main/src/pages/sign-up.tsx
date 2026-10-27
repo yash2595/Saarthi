@@ -324,7 +324,6 @@ export default function SignUp() {
       const draftId = searchParams.get('draft');
       
       if (draftId) {
-        console.log(`[DRAFT] Found draft token in URL: ${draftId}. Fetching from backend...`);
         try {
           const res = await authService.getDraft(draftId);
           if (res.status === 'success' && res.data) {
@@ -841,14 +840,13 @@ export default function SignUp() {
 
         console.log('[FRONTEND-PANDIT-SIGNUP] Sending FormData for Pandit:', fullName, panditEmail);
         const response = await authService.applyPandit(formData);
-        console.log('[FRONTEND-PANDIT-SIGNUP] Pandit Apply API response received:', response);
 
         if (response.status === 'success' || response.application_id) {
           setFormSent(true);
           sessionStorage.removeItem('ms_saarthi_pandit_form_data');
 
           const firstName = panditFirstName || fullName.split(' ')[0] || 'Panditji';
-          const successMsg = `Badhai ho ${firstName} ji! Aapka MantraSetu par Pandit ke roop mein registration safaltapoorvak complete ho gaya hai. Ab aap verified Panditji ke roop mein bhakton ki seva kar sakte hain!`;
+          const successMsg = `Dhanyavaad ${firstName} ji! Aapki Pandit application mil gayi hai. Verification aur approval ke baad aap bhakton ki seva kar sakte hain.`;
           announceMessage(successMsg, true);
         } else {
           throw new Error(response.message || 'Pandit application submission failed.');
@@ -859,12 +857,11 @@ export default function SignUp() {
           user_type: 'devotee',
           name,
           email,
-          phone: phone || '9876543210',
+          phone: phone.trim(),
           password,
           confirm_password: confirmPassword,
         });
 
-        console.log('[FRONTEND-DEVOTEE-SIGNUP] Signup API response received:', response);
 
         if (response.status === 'success' || response.user_id || response.access_token) {
           if (response.access_token) {
@@ -2240,7 +2237,7 @@ export default function SignUp() {
               </form>
             )}
 
-            {userType === 'devotee' && !formSent && (
+            {userType === 'devotee' && !formSent && import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() && (
               <>
                 <div className="auth-divider">or continue with</div>
                 <div className="auth-google-btn-wrapper" style={{ display: 'flex', justifySelf: 'stretch', width: '100%' }}>

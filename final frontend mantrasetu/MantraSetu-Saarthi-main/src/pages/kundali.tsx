@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { SiteHeader, SiteFooter, Modal, FaqAccordion, type ModalType } from '@/components/shared';
 import { kundaliService, type KundaliGenerateResponse } from '@/services/kundali.service';
+import { hasCalculatedChart, localDateInputValue } from '@/lib/service-results';
 
 const benefits = [
   {
@@ -79,6 +80,8 @@ export default function KundaliCreation() {
     e.preventDefault();
     setIsSubmitting(true);
     setApiError(null);
+    setFormSent(false);
+    setKundaliData(null);
 
     try {
       const response = await kundaliService.generateKundali({
@@ -88,12 +91,15 @@ export default function KundaliCreation() {
         pob,
         gender,
       });
+      if (!hasCalculatedChart(response)) {
+        throw new Error('A calculated birth chart is not available yet. Please try again later.');
+      }
       setKundaliData(response);
       setFormSent(true);
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : 'Unable to generate Kundali. Please try again.';
       setApiError(errorMessage);
-      setFormSent(true);
+      setFormSent(false);
     } finally {
       setIsSubmitting(false);
     }
@@ -129,7 +135,7 @@ export default function KundaliCreation() {
             <div className="section-heading">
               <span className="section-kicker">Generate your kundali</span>
               <h2 id="kundali-form-heading">Enter your birth details.</h2>
-              <p>Your birth details are used only to calculate your chart. We do not store personal information.</p>
+              <p>Your birth details are sent to our service and may be saved to your account with your chart request.</p>
             </div>
 
             <div className="muhurat-layout">
@@ -145,7 +151,7 @@ export default function KundaliCreation() {
                 </div>
                 <div className="field">
                   <label htmlFor="kundali-dob">Date of birth</label>
-                  <input id="kundali-dob" name="dob" type="date" required value={dob} onChange={(e) => setDob(e.target.value)} data-testid="input-kundali-dob" />
+                  <input id="kundali-dob" name="dob" type="date" max={localDateInputValue()} required value={dob} onChange={(e) => setDob(e.target.value)} data-testid="input-kundali-dob" />
                 </div>
                 <div className="field">
                   <label htmlFor="kundali-tob">Time of birth</label>

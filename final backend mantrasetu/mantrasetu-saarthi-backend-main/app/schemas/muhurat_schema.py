@@ -19,3 +19,4 @@ class MuhuratResponse(BaseModel):
     city: str
     date: str
     timings: list[MuhuratTiming]
+    calculation_status: str = 'sample'

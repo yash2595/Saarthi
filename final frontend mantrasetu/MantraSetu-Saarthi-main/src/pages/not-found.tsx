@@ -1,5 +1,6 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { AlertCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 export default function NotFound() {
   return (
@@ -14,8 +15,9 @@ export default function NotFound() {
           </div>
 
           <p className="mt-4 text-sm text-gray-600">
-            Did you forget to add the page to the router?
+            This page is not available. Check the address or return to the homepage.
           </p>
+          <Link to="/" className="button button-primary" style={{ marginTop: '1rem' }}>Go to homepage</Link>
         </CardContent>
       </Card>
     </div>

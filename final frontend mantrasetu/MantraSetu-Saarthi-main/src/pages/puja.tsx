@@ -17,6 +17,7 @@ import {
 import { SiteHeader, SiteFooter, Modal, type ModalType } from '@/components/shared';
 import { useSearchParams } from 'react-router-dom';
 import { pujaService } from '@/services/puja.service';
+import { localDateInputValue } from '@/lib/service-results';
 
 interface PujaItem {
   id: string;
@@ -137,6 +138,7 @@ export default function Puja() {
   const [searchQuery, setSearchQuery] = useState(initialSearch);
   const [bookingPuja, setBookingPuja] = useState<PujaItem | null>(null);
   const [pujas, setPujas] = useState<PujaItem[]>(defaultPujaCatalog);
+  const [catalogIsPreview, setCatalogIsPreview] = useState(true);
 
   // Helper to check if a puja title matches a search/service term
   const matchPujaScore = (puja: PujaItem, queryText: string): boolean => {
@@ -194,7 +196,7 @@ export default function Puja() {
   }, [searchParams, pujas]);
 
   // Form state for booking modal
-  const [bookingDate, setBookingDate] = useState('2026-08-15');
+  const [bookingDate, setBookingDate] = useState(localDateInputValue);
   const [bookingCity, setBookingCity] = useState(cityParam || 'New Delhi');
   const [bookingTime, setBookingTime] = useState('09:00 AM');
   const [devoteeName, setDevoteeName] = useState('');
@@ -225,6 +227,7 @@ export default function Puja() {
             popular: item.popular ?? idx < 3,
           }));
           setPujas(mapped);
+          setCatalogIsPreview(false);
         }
       } catch {
         // Fall back to default catalog if backend API is offline or returns error
@@ -359,6 +362,9 @@ export default function Puja() {
               </div>
             </div>
 
+            {catalogIsPreview && <p role="status" style={{ marginBottom: '1rem', color: '#776e65', fontSize: '0.85rem' }}>
+              Preview catalog: live availability and final prices could not be confirmed.
+            </p>}
             {/* Puja Cards Grid */}
             {filteredPujas.length === 0 ? (
               <div className="muhurat-empty" style={{ textAlign: 'center', padding: '3rem 1.5rem' }}>
@@ -481,7 +487,7 @@ export default function Puja() {
                       </div>
                       <div className="field">
                         <label htmlFor="booking-date">Ceremony Date</label>
-                        <input id="booking-date" type="date" value={bookingDate} onChange={(e) => setBookingDate(e.target.value)} required />
+                        <input id="booking-date" type="date" min={localDateInputValue()} value={bookingDate} onChange={(e) => setBookingDate(e.target.value)} required />
                       </div>
                     </div>
 

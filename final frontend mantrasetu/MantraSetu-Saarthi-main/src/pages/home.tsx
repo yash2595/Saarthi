@@ -165,7 +165,6 @@ export default function Home() {
   const [successMessage, setSuccessMessage] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const openLaunch = () => setModal('launch');
 
   const handleContactSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -207,9 +206,9 @@ export default function Home() {
             <h1 id="hero-title">Authentic Pujas.<br /><em>Verified Panditjis.</em><br />Divine Experience.</h1>
             <p className="hero-copy">Where tradition meets trust. Discover meaningful spiritual services, guided by authentic practitioners and designed for the way you live today.</p>
             <div className="hero-actions">
-              <button className="button button-primary" type="button" onClick={openLaunch} data-testid="button-book-service">
+              <Link className="button button-primary" to="/puja" data-testid="button-book-service">
                 Book a Service <ArrowRight size={16} />
-              </button>
+              </Link>
               <a className="button button-outline" href="#journey" data-testid="link-explore-journey">
                 Explore the journey
               </a>

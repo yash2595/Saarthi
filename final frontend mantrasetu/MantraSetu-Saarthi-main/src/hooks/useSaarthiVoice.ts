@@ -5,6 +5,7 @@ import { recordNavigation, canGoBack, type NavigationHistory } from '../lib/navi
 import { getPersistableData } from '../utils/formSecurity';
 import apiClient from '../api/api';
 import { voiceTicketErrorMessage } from '../lib/voice-session-status';
+import { requestVoiceTicketWithRetry } from '../lib/voice-ticket';
 import { unlockVoiceAudio } from '../lib/voice-audio-context';
 import { isPanditNavigation, normalizeNavigationTarget, isGreetingOnlyResponse } from '../lib/conversation-navigation';
 
@@ -1423,7 +1424,11 @@ export function useSaarthiVoice() {
     let ticket = '';
     try {
       console.log('[Voice] Fetching ephemeral voice ticket from backend (/voice/ticket)...');
-      const ticketRes = await apiClient.post('/voice/ticket', undefined, { timeout: 60000 });
+      const ticketRes = await requestVoiceTicketWithRetry(
+        () => apiClient.post('/voice/ticket', undefined, { timeout: 60000 }),
+        () => isVoiceEnabledRef.current && attempt === connectionAttemptRef.current,
+      );
+      if (!ticketRes) return;
       if (!isVoiceEnabledRef.current || attempt !== connectionAttemptRef.current) return;
       ticket = ticketRes.data?.ticket;
       console.log('[Voice] Voice ticket obtained successfully, type:', ticketRes.data?.type);

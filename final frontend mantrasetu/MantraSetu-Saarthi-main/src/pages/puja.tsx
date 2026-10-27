@@ -474,7 +474,7 @@ export default function Puja() {
                         <ShieldAlert size={16} style={{ flexShrink: 0 }} /> {bookingError}
                       </div>
                     )}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                    <div className="form-columns">
                       <div className="field">
                         <label htmlFor="booking-city">City</label>
                         <select id="booking-city" value={bookingCity} onChange={(e) => setBookingCity(e.target.value)} required>
@@ -491,7 +491,7 @@ export default function Puja() {
                       </div>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                    <div className="form-columns">
                       <div className="field">
                         <label htmlFor="booking-time">Time Slot</label>
                         <select id="booking-time" value={bookingTime} onChange={(e) => setBookingTime(e.target.value)}>

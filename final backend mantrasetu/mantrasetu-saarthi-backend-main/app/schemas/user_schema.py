@@ -1,6 +1,6 @@
 """Pydantic schemas for user signup and login."""
 
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 class SignupRequest(BaseModel):
@@ -8,9 +8,16 @@ class SignupRequest(BaseModel):
 
     name: str = Field(..., min_length=1, description="User's full name.")
     email: EmailStr = Field(..., description="User's email address.")
-    phone: str = Field(..., min_length=10, max_length=15, description="User's phone number.")
+    phone: str | None = Field(default=None, min_length=10, max_length=15, description="Optional phone number.")
     password: str = Field(..., min_length=6, description="Plain-text password from the form.")
     confirm_password: str = Field(..., description="Must match password.")
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def empty_phone_is_optional(cls, value):
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
 
     @model_validator(mode="after")
     def passwords_must_match(self):
@@ -27,7 +34,7 @@ class SignupResponse(BaseModel):
     user_id: str
     access_token: str | None = None
     token_type: str = "bearer"
-    
+
 class LoginRequest(BaseModel):
     """What the frontend sends us when someone logs in."""
 
@@ -42,7 +49,7 @@ class LoginResponse(BaseModel):
     message: str
     user_id: str
     name: str
-    
+
 class LoginResponse(BaseModel):
     """What we send back after a login attempt."""
 
@@ -51,5 +58,5 @@ class LoginResponse(BaseModel):
     user_id: str
     name: str
     access_token: str
-    token_type: str = "bearer"    
-    
+    token_type: str = "bearer"
+

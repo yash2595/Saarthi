@@ -1017,7 +1017,7 @@ export default function SignUp() {
                     }}
                   />
                 </div>
-                <div
+                {import.meta.env.DEV && <div
                   data-testid="active-field-indicator"
                   style={{
                     marginTop: '0.6rem',
@@ -1040,7 +1040,7 @@ export default function SignUp() {
                   <span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#9a3412', opacity: 0.85 }}>
                     Sync: Step {panditStep} of 3 (Voice &amp; Manual Active)
                   </span>
-                </div>
+                </div>}
               </div>
             )}
 
@@ -1141,7 +1141,7 @@ export default function SignUp() {
                         </div>
 
                         {/* First Name & Last Name */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                        <div className="form-columns">
                           <div className="field">
                             <label htmlFor="pandit-first-name">First Name (पहला नाम) *</label>
                             <input
@@ -1187,7 +1187,7 @@ export default function SignUp() {
                         </div>
 
                         {/* Email Address & Phone Number */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                        <div className="form-columns">
                           <div className="field">
                             <label htmlFor="pandit-email">Email Address *</label>
                             <input
@@ -1238,7 +1238,7 @@ export default function SignUp() {
                         </div>
 
                         {/* Gender & Availability Radio / Pill Groups */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                        <div className="form-columns">
                           <div className="field">
                             <label htmlFor="pandit-gender">Gender *</label>
                             <div data-field="pandit-gender" data-testid="pill-group-pandit-gender" style={{ display: 'flex', gap: '0.4rem', marginTop: '0.2rem' }}>
@@ -1315,7 +1315,7 @@ export default function SignUp() {
                         </div>
 
                         {/* Primary City & State */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                        <div className="form-columns">
                           <div className="field">
                             <label htmlFor="pandit-city">Primary City (शहर) *</label>
                             <input
@@ -1401,7 +1401,7 @@ export default function SignUp() {
                           />
                         </div>
 
-                        <div style={{ display: 'flex', gap: '1rem', marginTop: '0.4rem' }}>
+                        <div className="registration-actions" style={{ display: 'flex', gap: '1rem', marginTop: '0.4rem' }}>
                           <button
                             type="button"
                             className="button button-secondary"
@@ -1435,7 +1435,7 @@ export default function SignUp() {
                         </div>
 
                         {/* Experience in Years & Education */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                        <div className="form-columns">
                           <div className="field">
                             <label htmlFor="pandit-exp">अनुभव (वर्ष) * (Experience in Years *)</label>
                             <input
@@ -1633,7 +1633,7 @@ export default function SignUp() {
                           )}
                         </div>
 
-                        <div style={{ display: 'flex', gap: '0.8rem', marginTop: '0.4rem' }}>
+                        <div className="registration-actions" style={{ display: 'flex', gap: '0.8rem', marginTop: '0.4rem' }}>
                           <button
                             type="button"
                             className="button button-outline"
@@ -1674,7 +1674,7 @@ export default function SignUp() {
                         </div>
 
                         {/* Shiksha Pramanpatra & ID Proof */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                        <div className="form-columns">
                           <div className="field">
                             <label>शिक्षा प्रमाणपत्र (Shiksha Pramanpatra)</label>
                             <label
@@ -1858,7 +1858,7 @@ export default function SignUp() {
                         </div>
 
                         {/* Password & Confirm */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                        <div className="form-columns">
                           <div className="field">
                             <label htmlFor="pandit-password">Password (पासवर्ड) *</label>
                             <div style={{ position: 'relative' }}>

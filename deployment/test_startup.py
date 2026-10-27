@@ -78,3 +78,14 @@ response = asyncio.run(execute_find_muhurat(MuhuratRequest(
 assert response.calculation_status == 'sample'
 assert response.timings
 ''')
+
+
+def test_signup_optional_phone_is_not_replaced_with_a_fabricated_number():
+    run_service("final backend mantrasetu/mantrasetu-saarthi-backend-main", '''
+from app.schemas.user_schema import SignupRequest
+data = dict(name='QA Check', email='qa@example.com', password='Test-only-password',
+            confirm_password='Test-only-password')
+assert SignupRequest(**data).phone is None
+assert SignupRequest(**data, phone='').phone is None
+assert SignupRequest(**data, phone='9999999999').phone == '9999999999'
+''')

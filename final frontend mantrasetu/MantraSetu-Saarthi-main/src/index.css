@@ -1204,6 +1204,20 @@
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
+.field { min-width: 0; }
+.form-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+.registration-form .button { min-width: 0; white-space: normal; text-align: center; }
+.registration-actions { flex-wrap: wrap; }
+
+@media (max-width: 640px) {
+  .form-columns { grid-template-columns: minmax(0, 1fr); }
+  .registration-form input, .registration-form textarea, .registration-form select { min-width: 0; max-width: 100%; }
+}
+
 .field input[type="checkbox"],
 .field input[type="radio"] {
   width: 1.05rem;

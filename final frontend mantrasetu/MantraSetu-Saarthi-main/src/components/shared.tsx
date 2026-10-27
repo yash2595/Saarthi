@@ -204,7 +204,7 @@ export function SiteHeader({
               to={isAuthenticated ? "/dashboard" : "/login"}
               data-testid="button-account-settings"
             >
-              Book Puja
+              My Account
             </Link>
             <button className="menu-button mobile-only" type="button"
               aria-label={menuOpen ? 'Close menu' : 'Open menu'} aria-expanded={menuOpen}

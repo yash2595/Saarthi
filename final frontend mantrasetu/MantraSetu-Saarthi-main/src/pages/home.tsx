@@ -195,7 +195,7 @@ export default function Home() {
   };
 
   return (
-    <div className="page-shell">
+    <div className="page-shell" id="home">
       <SiteHeader page="home" onOpenModal={setModal} />
 
       <main>

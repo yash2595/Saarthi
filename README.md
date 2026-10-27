@@ -10,7 +10,7 @@ A React and FastAPI project for discovering puja services, registering pandits, 
 
 | Area | Implementation and verification |
 | --- | --- |
-| Voice conversation | WebSocket transport, microphone capture, STT adapters, navigation orchestrator and streamed TTS. Automated contracts use mocked providers; separate real InWorld STT/TTS and Groq checks also pass. Browser microphone permission is required for a conversation on the user’s device. |
+| Voice conversation | WebSocket transport, microphone capture, STT adapters, navigation orchestrator and streamed TTS. Automated contracts use mocked providers; separate real InWorld STT/TTS and Groq checks also pass. A synthetic Hindi command also passes through the deployed backend/STT/navigation/TTS pipeline. Browser microphone permission is required for a conversation on the user’s device. |
 | Authentication | Bcrypt password hashing, signed access tokens, signup/login, profile identity and expiring email verification. Verified against disposable local MongoDB; the deployed database is connected. |
 | Pandit onboarding | Multipart registration, draft resume capabilities expiring after seven days, private documents, admin review and approved-only public directory. Verified locally; production MongoDB is connected. Real document storage still requires a durable storage setup. |
 | Booking | Validated request creation and owner-scoped history. A request is **not a confirmed pandit assignment**. No payment, availability or fulfillment integration is implemented. |

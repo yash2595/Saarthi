@@ -37,7 +37,7 @@ The service URLs and production CORS origin are configured in hosting environmen
 
 The existing Render services use the free plan. Uploaded files and the local Chroma/TTS cache are ephemeral. Before accepting real document uploads, configure durable storage: attach an appropriate paid persistent disk and set `UPLOAD_DIR` for the backend, and configure persistent AI cache paths. No paid resources were provisioned.
 
-Local sentence-transformer inference can need more memory than a free instance provides. Check actual memory use after adding keys and upgrade the AI compute plan if required. Database/provider operations and end-to-end voice cannot be verified until the owner supplies credentials.
+Local sentence-transformer inference can need more memory than a free instance provides. Check actual memory use after adding keys and upgrade the AI compute plan if required. Real-provider tests now pass, including a synthetic Hindi speech request through the deployed backend, STT, navigation and spoken response. This does not certify a physical microphone; the in-app test browser denies microphone permission.
 
 ## Validation
 
